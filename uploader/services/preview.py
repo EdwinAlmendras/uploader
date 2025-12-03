@@ -1,7 +1,7 @@
 """
 Preview Service - Single Responsibility: generate video previews.
 
-Uses mediakit VideoGridGenerator for grid generation.
+Uses mediakit generate_video_grid function.
 Grid sizes:
 - < 1 min: 3x3
 - 1-15 min: 4x4
@@ -9,8 +9,6 @@ Grid sizes:
 """
 from pathlib import Path
 from typing import Optional
-import tempfile
-import asyncio
 
 from ..models import UploadConfig
 
@@ -19,7 +17,7 @@ class PreviewService:
     """
     Service for generating video preview grids.
     
-    Uses mediakit VideoGridGenerator.
+    Uses mediakit.video.generate_video_grid().
     """
     
     def __init__(self, config: Optional[UploadConfig] = None):
@@ -34,34 +32,19 @@ class PreviewService:
             duration: Video duration in seconds
             
         Returns:
-            Path to generated grid image (temp file)
+            Path to generated grid image
         """
+        from mediakit.video import generate_video_grid
+        
         grid_size = self._config.get_grid_size(duration)
         
-        # Run in executor (mediakit is sync)
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None, self._generate_sync, video_path, grid_size
-        )
-    
-    def _generate_sync(self, video_path: Path, grid_size: int) -> Path:
-        """Generate grid synchronously."""
-        from mediakit.video import VideoGridGenerator
-        
-        # Create temp output path
-        temp_dir = tempfile.mkdtemp(prefix="preview_")
-        output_path = Path(temp_dir) / f"{video_path.stem}_grid.jpg"
-        
-        # Generate grid
-        generator = VideoGridGenerator()
-        generator.generate(
+        # generate_video_grid is async
+        return await generate_video_grid(
             video_path=video_path,
-            output_path=output_path,
-            cols=grid_size,
-            rows=grid_size
+            grid_size=grid_size,
+            max_size=320,
+            quality=80
         )
-        
-        return output_path
     
     def get_preview_name(self, source_id: str) -> str:
         """Get preview filename: {source_id}.jpg"""

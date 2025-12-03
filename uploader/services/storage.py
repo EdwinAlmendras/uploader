@@ -110,7 +110,7 @@ class StorageService:
                     root = await self._client.get_root()
                     current_handle = root.handle
                 
-                new_folder = await self._client.mkdir(part, parent=current_handle)
+                new_folder = await self._client.create_folder(part, current_handle)
                 current_handle = new_folder.handle
         
         return current_handle
@@ -169,10 +169,10 @@ class StorageService:
             if folder:
                 self._preview_folder_handle = folder.handle
             else:
-                # Create folder in root
+                # Create folder in root using create_folder
                 root = await self._client.get_root()
                 if root:
-                    folder = await self._client.mkdir(".previews", parent=root.handle)
+                    folder = await self._client.create_folder(".previews", root.handle)
                     self._preview_folder_handle = folder.handle
                     print(f"[storage] Created /.previews folder")
             
