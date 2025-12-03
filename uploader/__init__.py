@@ -32,7 +32,7 @@ Usage:
     result = await uploader.upload_social(video_path, social_info)
 """
 from .orchestrator import UploadOrchestrator, FolderUploadResult
-from .models import UploadResult, UploadStatus, SocialInfo, UploadConfig
+from .models import UploadResult, UploadStatus, SocialInfo, UploadConfig, TelegramInfo
 from .services import (
     AnalyzerService,
     MetadataRepository,
@@ -50,6 +50,7 @@ __all__ = [
     "UploadStatus",
     "SocialInfo",
     "UploadConfig",
+    "TelegramInfo",
     # Services
     "AnalyzerService",
     "MetadataRepository",
