@@ -47,7 +47,7 @@ class TestStorageService:
         client.upload = AsyncMock(return_value=Mock(handle="uploaded_handle"))
         client.get = AsyncMock(return_value=None)
         client.get_root = AsyncMock(return_value=Mock(handle="root_handle"))
-        client.mkdir = AsyncMock(return_value=Mock(handle="folder_handle"))
+        client.create_folder = AsyncMock(return_value=Mock(handle="folder_handle"))
         return client
     
     @pytest.mark.asyncio
@@ -59,8 +59,8 @@ class TestStorageService:
         
         handle = await service.upload_preview(Path("preview.jpg"), "abc123")
         
-        # Should create folder
-        mock_client.mkdir.assert_called_once()
+        # Should create folder using create_folder
+        mock_client.create_folder.assert_called_once()
         assert handle == "uploaded_handle"
     
     @pytest.mark.asyncio
@@ -74,4 +74,4 @@ class TestStorageService:
         await service.upload_preview(Path("preview2.jpg"), "abc2")
         
         # Should only call get once, then reuse cached handle
-        mock_client.mkdir.assert_not_called()
+        mock_client.create_folder.assert_not_called()
