@@ -293,20 +293,37 @@ class UploadOrchestrator:
         source_id: str,
         duration: float
     ) -> Optional[str]:
-        """Generate and upload preview grid."""
+        """Generate and upload preview grid to /.previews/{source_id}.jpg"""
         try:
-            # Generate grid
+            # Generate grid (3x3, 4x4, or 5x5 based on duration)
             grid_path = await self._preview.generate(path, duration)
             
-            # Upload to /.previews/
+            if not grid_path or not grid_path.exists():
+                print(f"[preview] Failed to generate grid for {path.name}")
+                return None
+            
+            # Upload to /.previews/{source_id}.jpg
             handle = await self._storage.upload_preview(grid_path, source_id)
             
-            # Cleanup
-            grid_path.unlink(missing_ok=True)
+            # Cleanup temp file
+            try:
+                grid_path.unlink(missing_ok=True)
+                # Also cleanup temp dir
+                if grid_path.parent.name.startswith("preview_"):
+                    import shutil
+                    shutil.rmtree(grid_path.parent, ignore_errors=True)
+            except:
+                pass
+            
+            if handle:
+                print(f"[preview] Uploaded: /.previews/{source_id}.jpg")
+            else:
+                print(f"[preview] Upload failed for {source_id}")
             
             return handle
             
-        except Exception:
+        except Exception as e:
+            print(f"[preview] Error: {e}")
             return None
     
     async def upload_folder(

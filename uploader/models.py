@@ -99,12 +99,24 @@ class UploadConfig:
     dest_folder: str = "/Videos"
     preview_folder: str = "/.previews"
     generate_preview: bool = True
-    grid_size_short: int = 4  # < 20 min
-    grid_size_long: int = 5   # >= 20 min
-    long_video_threshold: int = 1200  # 20 minutes in seconds
+    # Grid sizes based on duration
+    grid_size_tiny: int = 3    # < 1 min
+    grid_size_short: int = 4   # 1-15 min
+    grid_size_long: int = 5    # > 15 min
+    # Thresholds in seconds
+    tiny_threshold: int = 60       # 1 minute
+    long_threshold: int = 900      # 15 minutes
     
     def get_grid_size(self, duration: float) -> int:
-        """Get grid size based on video duration."""
-        if duration >= self.long_video_threshold:
+        """
+        Get grid size based on video duration.
+        
+        - < 1 min: 3x3
+        - 1-15 min: 4x4
+        - > 15 min: 5x5
+        """
+        if duration < self.tiny_threshold:
+            return self.grid_size_tiny
+        elif duration >= self.long_threshold:
             return self.grid_size_long
         return self.grid_size_short

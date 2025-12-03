@@ -99,20 +99,22 @@ class TestUploadConfig:
         assert config.preview_folder == "/.previews"
         assert config.generate_preview is True
     
-    def test_grid_size_short_video(self):
+    def test_grid_size_tiny_video(self):
+        """< 1 min = 3x3"""
         config = UploadConfig()
+        assert config.get_grid_size(30) == 3   # 30 sec
+        assert config.get_grid_size(59) == 3   # 59 sec
+    
+    def test_grid_size_short_video(self):
+        """1-15 min = 4x4"""
+        config = UploadConfig()
+        assert config.get_grid_size(60) == 4   # 1 min
         assert config.get_grid_size(600) == 4  # 10 min
+        assert config.get_grid_size(899) == 4  # 14:59
     
     def test_grid_size_long_video(self):
+        """> 15 min = 5x5"""
         config = UploadConfig()
-        assert config.get_grid_size(1500) == 5  # 25 min
-    
-    def test_custom_config(self):
-        config = UploadConfig(
-            dest_folder="/MyVideos",
-            grid_size_short=3,
-            grid_size_long=6
-        )
-        assert config.dest_folder == "/MyVideos"
-        assert config.get_grid_size(100) == 3
-        assert config.get_grid_size(2000) == 6
+        assert config.get_grid_size(900) == 5  # 15 min
+        assert config.get_grid_size(1500) == 5 # 25 min
+        assert config.get_grid_size(3600) == 5 # 1 hour

@@ -121,7 +121,7 @@ class StorageService:
         source_id: str
     ) -> Optional[str]:
         """
-        Upload preview to /.previews/ folder.
+        Upload preview to /.previews/{source_id}.jpg
         
         Args:
             path: Path to preview image
@@ -134,6 +134,10 @@ class StorageService:
             # Get or create .previews folder
             folder_handle = await self._ensure_preview_folder()
             
+            if not folder_handle:
+                print(f"[storage] Failed to get/create .previews folder")
+                return None
+            
             # Upload with source_id as name
             preview_name = f"{source_id}.jpg"
             node = await self._client.upload(
@@ -144,12 +148,13 @@ class StorageService:
             
             return node.handle if node else None
             
-        except Exception:
+        except Exception as e:
+            print(f"[storage] Upload preview error: {e}")
             return None
     
-    async def _ensure_preview_folder(self) -> str:
+    async def _ensure_preview_folder(self) -> Optional[str]:
         """
-        Ensure /.previews/ folder exists.
+        Ensure /.previews/ folder exists in MEGA root.
         
         Returns:
             Handle of preview folder
@@ -157,15 +162,21 @@ class StorageService:
         if self._preview_folder_handle:
             return self._preview_folder_handle
         
-        # Try to get existing folder
-        folder = await self._client.get(self._config.preview_folder)
-        
-        if folder:
-            self._preview_folder_handle = folder.handle
-        else:
-            # Create folder
-            root = await self._client.get_root()
-            folder = await self._client.mkdir(".previews", parent=root.handle)
-            self._preview_folder_handle = folder.handle
-        
-        return self._preview_folder_handle
+        try:
+            # Try to get existing folder
+            folder = await self._client.get("/.previews")
+            
+            if folder:
+                self._preview_folder_handle = folder.handle
+            else:
+                # Create folder in root
+                root = await self._client.get_root()
+                if root:
+                    folder = await self._client.mkdir(".previews", parent=root.handle)
+                    self._preview_folder_handle = folder.handle
+                    print(f"[storage] Created /.previews folder")
+            
+            return self._preview_folder_handle
+        except Exception as e:
+            print(f"[storage] Error creating .previews folder: {e}")
+            return None
