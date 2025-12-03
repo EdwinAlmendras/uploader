@@ -36,7 +36,7 @@ class IStorageClient(Protocol):
         """Get node by path."""
         ...
     
-    async def mkdir(self, name: str, parent: Optional[str] = None) -> Any:
+    async def create_folder(self, name: str, parent: Optional[str] = None) -> Any:
         """Create folder."""
         ...
     
