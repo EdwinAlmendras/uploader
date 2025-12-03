@@ -126,34 +126,40 @@ class UploadOrchestrator:
         """
         path = Path(path)
         
-        tech_data = await self._analyzer.analyze_async(path)
-        source_id = tech_data["source_id"]
-        duration = tech_data.get("duration", 0)
-        
-        # 2. Save metadata
-        await self._repository.save_document(tech_data)
-        await self._repository.save_video_metadata(source_id, tech_data)
-        
-        # 3. Upload video
-        mega_handle = await self._storage.upload_video(
-            path, dest, source_id, progress_callback
-        )
-        
-        if not mega_handle:
-            return UploadResult.fail(path.name, "Upload to MEGA failed")
-        
-        # 4. Generate and upload preview
-        preview_handle = None
-        if self._config.generate_preview:
-            preview_handle = await self._upload_preview(path, source_id, duration)
-        
-        return UploadResult.ok(
-            source_id=source_id,
-            filename=path.name,
-            mega_handle=mega_handle,
-            preview_handle=preview_handle
-        )
+        try:
+            # 1. Analyze
+            tech_data = await self._analyzer.analyze_async(path)
+            source_id = tech_data["source_id"]
+            duration = tech_data.get("duration", 0)
             
+            # 2. Save metadata
+            await self._repository.save_document(tech_data)
+            await self._repository.save_video_metadata(source_id, tech_data)
+            
+            # 3. Upload video
+            mega_handle = await self._storage.upload_video(
+                path, dest, source_id, progress_callback
+            )
+            
+            if not mega_handle:
+                return UploadResult.fail(path.name, "Upload to MEGA failed")
+            
+            # 4. Generate and upload preview
+            preview_handle = None
+            if self._config.generate_preview:
+                preview_handle = await self._upload_preview(path, source_id, duration)
+            
+            return UploadResult.ok(
+                source_id=source_id,
+                filename=path.name,
+                mega_handle=mega_handle,
+                preview_handle=preview_handle
+            )
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return UploadResult.fail(path.name, str(e))
     
     async def upload_social(
         self,
