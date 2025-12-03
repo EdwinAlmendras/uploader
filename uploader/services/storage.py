@@ -6,9 +6,8 @@ Wraps MEGA client with additional logic for previews.
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from ..protocols import IStorageClient
 from ..models import UploadConfig
-
+from megapy import MegaClient
 
 class StorageService:
     """
@@ -19,7 +18,7 @@ class StorageService:
     
     def __init__(
         self,
-        client: IStorageClient,
+        client: MegaClient,
         config: Optional[UploadConfig] = None
     ):
         """
