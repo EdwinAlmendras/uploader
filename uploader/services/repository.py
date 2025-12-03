@@ -9,7 +9,7 @@ from datetime import datetime
 import httpx
 
 from ..protocols import IMetadataRepository, IAPIClient
-from ..models import SocialInfo
+from ..models import SocialInfo, TelegramInfo
 
 
 class MetadataRepository(IMetadataRepository):
@@ -156,6 +156,34 @@ class MetadataRepository(IMetadataRepository):
             "upload_date": social_info.upload_date_iso,
             "fetched_at": datetime.utcnow().isoformat(),
         })
+    
+    async def save_telegram(self, document_id: str, telegram_info: TelegramInfo) -> None:
+        """
+        Save Telegram document metadata.
+        
+        Args:
+            document_id: Reference to document
+            telegram_info: Telegram metadata
+        """
+        await self._api.post("/telegram", json={
+            "document_id": document_id,
+            "message_id": telegram_info.message_id,
+            "chat_id": telegram_info.chat_id,
+            "telegram_document_id": telegram_info.telegram_document_id,
+            "upload_date": telegram_info.upload_date,
+            "fetched_at": datetime.utcnow().isoformat(),
+        })
+    
+    def prepare_telegram(self, document_id: str, telegram_info: TelegramInfo) -> Dict[str, Any]:
+        """Prepare telegram metadata dict for batch."""
+        return {
+            "document_id": document_id,
+            "message_id": telegram_info.message_id,
+            "chat_id": telegram_info.chat_id,
+            "telegram_document_id": telegram_info.telegram_document_id,
+            "upload_date": telegram_info.upload_date,
+            "fetched_at": datetime.utcnow().isoformat(),
+        }
     
     # =========================================================================
     # Batch Operations

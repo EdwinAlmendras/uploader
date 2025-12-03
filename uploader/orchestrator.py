@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional, List, Callable
 from dataclasses import dataclass
 
-from .models import UploadResult, UploadStatus, SocialInfo, UploadConfig
+from .models import UploadResult, UploadStatus, SocialInfo, UploadConfig, TelegramInfo
 from .protocols import IStorageClient
 from .services.analyzer import AnalyzerService
 from .services.repository import MetadataRepository, HTTPAPIClient
@@ -288,6 +288,79 @@ class UploadOrchestrator:
             return await self.upload_photo(path, dest, progress_callback)
         else:
             return UploadResult.fail(path.name, f"Unsupported file type: {path.suffix}")
+    
+    async def upload_telegram(
+        self,
+        path: Path,
+        telegram_info: Optional[TelegramInfo] = None,
+        dest: Optional[str] = None,
+        progress_callback=None
+    ) -> UploadResult:
+        """
+        Upload media with optional Telegram metadata.
+        
+        Args:
+            path: Path to media file
+            telegram_info: Optional Telegram metadata
+            dest: Destination folder in MEGA
+            progress_callback: Optional progress callback
+            
+        Returns:
+            UploadResult
+        """
+        path = Path(path)
+        
+        try:
+            # 1. Detect type and analyze
+            if self._analyzer.is_video(path):
+                tech_data = await self._analyzer.analyze_async(path)
+                source_id = tech_data["source_id"]
+                duration = tech_data.get("duration", 0)
+                is_video = True
+            elif self._analyzer.is_photo(path):
+                tech_data = await self._analyzer.analyze_photo_async(path)
+                source_id = tech_data["source_id"]
+                duration = 0
+                is_video = False
+            else:
+                return UploadResult.fail(path.name, f"Unsupported file type: {path.suffix}")
+            
+            # 2. Save base metadata
+            await self._repository.save_document(tech_data)
+            
+            if is_video:
+                await self._repository.save_video_metadata(source_id, tech_data)
+            else:
+                await self._repository.save_photo_metadata(source_id, tech_data)
+            
+            # 3. Save Telegram metadata if provided
+            if telegram_info:
+                await self._repository.save_telegram(source_id, telegram_info)
+            
+            # 4. Upload to MEGA
+            mega_handle = await self._storage.upload_video(
+                path, dest, source_id, progress_callback
+            )
+            
+            if not mega_handle:
+                return UploadResult.fail(path.name, "Upload to MEGA failed")
+            
+            # 5. Generate and upload preview for videos
+            preview_handle = None
+            if is_video and self._config.generate_preview:
+                preview_handle = await self._upload_preview(path, source_id, duration)
+            
+            return UploadResult.ok(
+                source_id=source_id,
+                filename=path.name,
+                mega_handle=mega_handle,
+                preview_handle=preview_handle
+            )
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return UploadResult.fail(path.name, str(e))
     
     async def _upload_preview(
         self,

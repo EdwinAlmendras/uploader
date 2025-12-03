@@ -94,6 +94,15 @@ class SocialInfo:
 
 
 @dataclass(frozen=True)
+class TelegramInfo:
+    """Immutable Telegram media metadata."""
+    message_id: int
+    chat_id: int
+    upload_date: Optional[str] = None  # ISO format or datetime
+    telegram_document_id: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class UploadConfig:
     """Immutable configuration for upload operations."""
     dest_folder: str = "/Videos"

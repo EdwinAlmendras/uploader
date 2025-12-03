@@ -31,6 +31,7 @@ class StorageService:
         self._client = client
         self._config = config or UploadConfig()
         self._preview_folder_handle: Optional[str] = None
+        self._folder_cache: Dict[str, str] = {}  # path -> handle cache
     
     async def upload_video(
         self,
@@ -79,7 +80,7 @@ class StorageService:
         return await self._get_or_create_folder(path)
     
     async def _get_or_create_folder(self, path: str) -> Optional[str]:
-        """Get or create folder, creating parents as needed."""
+        """Get or create folder, creating parents as needed. Uses cache."""
         if not path:
             root = await self._client.get_root()
             return root.handle if root else None
@@ -87,9 +88,14 @@ class StorageService:
         # Normalize path
         path = path.strip("/")
         
-        # Check if exists
+        # Check cache first
+        if path in self._folder_cache:
+            return self._folder_cache[path]
+        
+        # Check if exists in MEGA
         node = await self._client.get(f"/{path}")
         if node:
+            self._folder_cache[path] = node.handle
             return node.handle
         
         # Create path recursively
@@ -99,6 +105,12 @@ class StorageService:
         
         for part in parts:
             current_path = f"{current_path}/{part}" if current_path else part
+            
+            # Check cache for intermediate paths
+            if current_path in self._folder_cache:
+                current_handle = self._folder_cache[current_path]
+                continue
+            
             node = await self._client.get(f"/{current_path}")
             
             if node:
@@ -111,6 +123,9 @@ class StorageService:
                 
                 new_folder = await self._client.create_folder(part, current_handle)
                 current_handle = new_folder.handle
+            
+            # Cache intermediate path
+            self._folder_cache[current_path] = current_handle
         
         return current_handle
     
