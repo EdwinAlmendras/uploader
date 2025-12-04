@@ -619,10 +619,27 @@ class UploadOrchestrator:
                     progress_callback(f"Saving {len(batch_items)} new files to API...", 0, 1)
                 await self._repository.save_batch(batch_items)
             
-            # Calculate average file size for parallel count
+            # Calculate total size for account selection (ensure folder goes to one account)
             total_size = sum(f.stat().st_size for f, _, _, _, _ in pending_data) if pending_data else 0
             avg_size = total_size / len(pending_data) if pending_data else 0
             parallel_count = _get_parallel_count(avg_size)
+            
+            # Lock account for entire folder (if ManagedStorageService)
+            # This ensures all files in folder go to same account
+            if hasattr(self._storage, 'lock_account_for_size') and total_size > 0:
+                if progress_callback:
+                    progress_callback(f"Selecting account for {total_size / (1024*1024):.1f} MB...", 0, 1)
+                locked = await self._storage.lock_account_for_size(total_size)
+                if not locked:
+                    return FolderUploadResult(
+                        success=False,
+                        folder_name=folder_path.name,
+                        total_files=total,
+                        uploaded_files=0,
+                        failed_files=len(pending_data),
+                        results=[],
+                        error=f"No account has enough space for {total_size / (1024*1024):.1f} MB"
+                    )
             
             if progress_callback:
                 progress_callback(f"Uploading with {parallel_count} parallel uploads...", 0, total)
@@ -697,6 +714,10 @@ class UploadOrchestrator:
             
             await run_with_progress()
             
+            # Unlock account after folder upload completes
+            if hasattr(self._storage, 'unlock_account'):
+                self._storage.unlock_account()
+            
             return FolderUploadResult(
                 success=failed == 0,
                 folder_name=folder_path.name,
@@ -711,6 +732,9 @@ class UploadOrchestrator:
             import traceback
             error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
             print(f"\n❌ UPLOAD ERROR: {error_msg}")
+            # Unlock account on error
+            if hasattr(self._storage, 'unlock_account'):
+                self._storage.unlock_account()
             return FolderUploadResult(
                 success=False,
                 folder_name=folder_path.name,

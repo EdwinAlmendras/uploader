@@ -61,6 +61,8 @@ class ManagedStorageService:
         self._folder_cache: Dict[str, Dict[str, str]] = {}  # account_name -> {path -> handle} cache
         self._last_account: Optional[str] = None
         self._started = False
+        self._locked_account: Optional[str] = None  # Account locked for folder upload
+        self._locked_client = None  # Client for locked account
     
     @property
     def manager(self) -> AccountManager:
@@ -84,6 +86,30 @@ class ManagedStorageService:
     async def __aexit__(self, *args) -> None:
         await self.close()
     
+    async def lock_account_for_size(self, total_size: int) -> bool:
+        """
+        Lock an account for folder upload to ensure all files go to same account.
+        
+        Args:
+            total_size: Total size of all files in folder (bytes)
+            
+        Returns:
+            True if account locked successfully, False if no account has enough space
+        """
+        try:
+            # Get client with enough space for entire folder
+            client = await self._manager.get_client_for(total_size)
+            self._locked_account = self._manager._current_account
+            self._locked_client = client
+            return True
+        except Exception:
+            return False
+    
+    def unlock_account(self):
+        """Unlock account after folder upload completes."""
+        self._locked_account = None
+        self._locked_client = None
+    
     async def upload_video(
         self,
         path: Path,
@@ -94,7 +120,7 @@ class ManagedStorageService:
         """
         Upload video/file to storage.
         
-        Automatically selects account with enough space.
+        Automatically selects account with enough space, or uses locked account.
         
         Args:
             path: Path to file
@@ -109,11 +135,16 @@ class ManagedStorageService:
         file_size = path.stat().st_size
         dest = dest or self._config.dest_folder
         
-        # Get client with enough space
-        client = await self._manager.get_client_for(file_size)
+        # Use locked account if available, otherwise select automatically
+        if self._locked_client and self._locked_account:
+            client = self._locked_client
+            current_account = self._locked_account
+        else:
+            # Get client with enough space
+            client = await self._manager.get_client_for(file_size)
+            current_account = self._manager._current_account
         
         # Track account changes and clear cache if needed
-        current_account = self._manager._current_account
         if current_account != self._last_account:
             # Account changed - cache is still valid per account, but we track it
             self._last_account = current_account
@@ -130,8 +161,8 @@ class ManagedStorageService:
         )
         
         # Update space tracking in manager
-        if node and self._manager._current_account:
-            account = self._manager._accounts.get(self._manager._current_account)
+        if node and current_account:
+            account = self._manager._accounts.get(current_account)
             if account:
                 account.space_used += file_size
                 account.space_free -= file_size
