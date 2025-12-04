@@ -38,8 +38,14 @@ from .services import (
     MetadataRepository,
     PreviewService,
     StorageService,
-    ManagedStorageService,
 )
+
+# Optional: requires mega-account package
+try:
+    from .services import ManagedStorageService
+    _has_managed = True
+except ImportError:
+    _has_managed = False
 
 __version__ = "0.1.0"
 __all__ = [
@@ -57,5 +63,7 @@ __all__ = [
     "MetadataRepository",
     "PreviewService",
     "StorageService",
-    "ManagedStorageService",
 ]
+
+if _has_managed:
+    __all__.append("ManagedStorageService")

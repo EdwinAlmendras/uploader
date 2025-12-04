@@ -3,12 +3,21 @@ Managed Storage Service - Uses AccountManager for multi-account uploads.
 
 Automatically selects the best account based on available space.
 Creates new sessions when all accounts are full.
+
+Requires: pip install mega-account (or from local)
 """
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from ..models import UploadConfig
-from mega_account import AccountManager, NoSpaceError
+
+try:
+    from mega_account import AccountManager, NoSpaceError
+except ImportError:
+    raise ImportError(
+        "mega-account is required for ManagedStorageService. "
+        "Install it with: pip install mega-account"
+    )
 
 
 class ManagedStorageService:

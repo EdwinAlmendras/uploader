@@ -88,35 +88,43 @@ class UploadOrchestrator:
     - Open/Closed (extend via new services)
     
     Usage:
+        # With single MEGA client
         async with UploadOrchestrator(api_url, mega) as uploader:
             result = await uploader.upload(video_path)
-            result = await uploader.upload_social(video_path, social_info)
+        
+        # With ManagedStorageService (multi-account)
+        managed = await ManagedStorageService().start()
+        async with UploadOrchestrator(api_url, storage_service=managed) as uploader:
+            result = await uploader.upload(video_path)
     """
     
     def __init__(
         self,
         api_url: str,
-        storage_client: IStorageClient,
-        config: Optional[UploadConfig] = None
+        storage_client: IStorageClient = None,
+        config: Optional[UploadConfig] = None,
+        storage_service = None,
     ):
         """
         Initialize orchestrator with dependencies.
         
         Args:
             api_url: Datastore API URL
-            storage_client: Storage client (MEGA)
+            storage_client: Storage client (MEGA) - deprecated, use storage_service
             config: Upload configuration
+            storage_service: Pre-built storage service (StorageService or ManagedStorageService)
         """
         self._api_url = api_url
         self._storage_client = storage_client
         self._config = config or UploadConfig()
+        self._external_storage = storage_service
         
         # Services (initialized in __aenter__)
         self._api_client: Optional[HTTPAPIClient] = None
         self._analyzer: Optional[AnalyzerService] = None
         self._repository: Optional[MetadataRepository] = None
         self._preview: Optional[PreviewService] = None
-        self._storage: Optional[StorageService] = None
+        self._storage = None
     
     async def __aenter__(self):
         """Initialize services."""
@@ -128,7 +136,14 @@ class UploadOrchestrator:
         self._analyzer = AnalyzerService()
         self._repository = MetadataRepository(self._api_client)
         self._preview = PreviewService(self._config)
-        self._storage = StorageService(self._storage_client, self._config)
+        
+        # Use external storage service if provided, otherwise create one
+        if self._external_storage:
+            self._storage = self._external_storage
+        elif self._storage_client:
+            self._storage = StorageService(self._storage_client, self._config)
+        else:
+            raise ValueError("Either storage_client or storage_service must be provided")
         
         return self
     
