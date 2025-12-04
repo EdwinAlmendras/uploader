@@ -225,14 +225,13 @@ class SingleUploadHandler:
             if not mega_handle:
                 return UploadResult.fail(path.name, "Upload to MEGA failed")
             
-            # 5. Generate and upload preview for videos (non-blocking)
-            # Run in background to avoid blocking upload queue
+            # 5. Generate and upload preview for videos
+            # Wait for preview to complete before returning to ensure file is not deleted
             preview_handle = None
             if is_vid and self._config.generate_preview:
-                # Fire-and-forget: generate preview in background
-                import asyncio
-                asyncio.create_task(
-                    self._preview_handler.upload_preview_background(path, source_id, duration)
+                # Generate preview synchronously to ensure file exists
+                preview_handle = await self._preview_handler.upload_preview(
+                    path, source_id, duration
                 )
             
             return UploadResult.ok(

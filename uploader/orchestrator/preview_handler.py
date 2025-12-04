@@ -27,6 +27,12 @@ class PreviewHandler:
     ) -> Optional[str]:
         """Generate and upload preview grid to /.previews/{source_id}.jpg"""
         try:
+            # Verify file exists before generating preview
+            path = Path(path)
+            if not path.exists():
+                print(f"[preview] Error: Video file does not exist: {path}")
+                return None
+            
             # Generate grid (3x3, 4x4, or 5x5 based on duration)
             grid_path = await self._preview.generate(path, duration)
             
@@ -53,6 +59,9 @@ class PreviewHandler:
             
             return handle
             
+        except FileNotFoundError as e:
+            print(f"[preview] Error: Video file does not exist: {path}")
+            return None
         except Exception as e:
             print(f"[preview] Error: {e}")
             return None
