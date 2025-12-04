@@ -138,6 +138,24 @@ class ManagedStorageService:
         
         return node.handle if node else None
     
+    async def exists(self, path: str) -> bool:
+        """
+        Check if file/folder exists in MEGA.
+        
+        Args:
+            path: Full path to check (e.g., "/Folder/file.mp4")
+            
+        Returns:
+            True if exists, False otherwise
+        """
+        try:
+            client = await self._manager.get_client_for(0)
+            path = path if path.startswith("/") else f"/{path}"
+            node = await client.get(path)
+            return node is not None
+        except Exception:
+            return False
+    
     async def create_folder(self, path: str) -> Optional[str]:
         """
         Create folder path in MEGA (creates parents if needed).

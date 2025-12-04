@@ -27,7 +27,7 @@ from .services.analyzer import AnalyzerService
 from .services.repository import MetadataRepository, HTTPAPIClient
 from .services.preview import PreviewService
 from .services.storage import StorageService
-# ResumeService removed - using simple exists() check instead
+from .services.resume import sha256_file
 
 # Import extensions from mediakit
 from mediakit import is_video, is_image
@@ -504,68 +504,120 @@ class UploadOrchestrator:
                     error="No media files found in folder"
                 )
             
-            # 2. Analyze all files and prepare batch
-            if progress_callback:
-                progress_callback("Analyzing files...", 0, total)
-            
-            batch_items = []
-            file_data = []  # (path, source_id, tech_data, is_video, rel_path)
-            
-            for idx, file_path in enumerate(all_files):
-                rel_path = file_path.relative_to(folder_path)
-                
-                if is_video(file_path):
-                    tech_data = self._analyzer.analyze_video(file_path)
-                    source_id = tech_data["source_id"]
-                    
-                    batch_items.append({
-                        "document": self._repository.prepare_document(tech_data),
-                        "video_metadata": self._repository.prepare_video_metadata(source_id, tech_data),
-                    })
-                    file_data.append((file_path, source_id, tech_data, True, rel_path))
-                    
-                elif is_image(file_path):
-                    tech_data = self._analyzer.analyze_photo(file_path)
-                    source_id = tech_data["source_id"]
-                    
-                    batch_items.append({
-                        "document": self._repository.prepare_document(tech_data),
-                        "photo_metadata": self._repository.prepare_photo_metadata(source_id, tech_data),
-                    })
-                    file_data.append((file_path, source_id, tech_data, False, rel_path))
-                
-                if progress_callback:
-                    progress_callback(f"Analyzed: {file_path.name}", idx + 1, total)
-            
-            # 3. Send batch to API (single request)
-            if progress_callback:
-                progress_callback("Saving metadata to API...", 0, 1)
-            
-            await self._repository.save_batch(batch_items)
-            
-            # 4. Create folder structure and upload files
+            # 2. Create folder structure FIRST
             dest_path = f"{dest}/{folder_path.name}" if dest else folder_path.name
             root_handle = await self._storage.create_folder(dest_path)
             
-            # 4.1 Check existing files in MEGA for resume support
-            pending_data = []
+            # 3. Check which files already exist in MEGA (BEFORE analyzing)
+            if progress_callback:
+                progress_callback("Checking existing files in MEGA...", 0, total)
+            
+            pending_files = []  # Files that need to be uploaded
             skipped = 0
-            for file_path, source_id, tech_data, is_vid, rel_path in file_data:
-                # Build target path in MEGA
+            
+            for idx, file_path in enumerate(all_files):
+                rel_path = file_path.relative_to(folder_path)
                 mega_dest = f"{dest_path}/{rel_path.parent}" if rel_path.parent != Path(".") else dest_path
                 target_path = f"{mega_dest}/{file_path.name}"
                 
-                # Check if file already exists in MEGA
                 exists = await self._storage.exists(target_path)
                 if exists:
                     skipped += 1
-                    if progress_callback:
-                        progress_callback(f"Skipped (exists): {file_path.name}", skipped, total)
                 else:
-                    pending_data.append((file_path, source_id, tech_data, is_vid, rel_path))
+                    pending_files.append((file_path, rel_path))
+                
+                if progress_callback and idx % 10 == 0:
+                    progress_callback(f"Checking: {file_path.name}", idx + 1, total)
             
             if skipped > 0:
                 print(f"[resume] Skipped {skipped} files already in MEGA")
+            
+            if not pending_files:
+                return FolderUploadResult(
+                    success=True,
+                    folder_name=folder_path.name,
+                    total_files=total,
+                    uploaded_files=skipped,
+                    failed_files=0,
+                    results=[],
+                    error=None
+                )
+            
+            # 4. Calculate SHA256 for pending files
+            if progress_callback:
+                progress_callback(f"Calculating hashes for {len(pending_files)} files...", 0, len(pending_files))
+            
+            sha256_map = {}  # sha256 -> (file_path, rel_path)
+            sha256_list = []
+            
+            for idx, (file_path, rel_path) in enumerate(pending_files):
+                sha = sha256_file(file_path)
+                sha256_map[sha] = (file_path, rel_path)
+                sha256_list.append(sha)
+                if progress_callback and idx % 10 == 0:
+                    progress_callback(f"Hashing: {file_path.name}", idx + 1, len(pending_files))
+            
+            # 5. Check API for existing source_ids (resume interrupted uploads)
+            existing_ids = {}  # sha256 -> source_id
+            if sha256_list:
+                try:
+                    existing_ids = await self._repository.lookup_by_sha256(sha256_list)
+                    if existing_ids:
+                        print(f"[resume] Found {len(existing_ids)} files already in API (will reuse source_ids)")
+                except Exception as e:
+                    print(f"[resume] API lookup failed: {e}")
+            
+            # 6. Analyze files - reuse source_id if exists, else generate new
+            if progress_callback:
+                progress_callback(f"Analyzing {len(pending_files)} files...", 0, len(pending_files))
+            
+            batch_items = []
+            pending_data = []  # (path, source_id, tech_data, is_video, rel_path)
+            
+            for idx, sha in enumerate(sha256_list):
+                file_path, rel_path = sha256_map[sha]
+                
+                # Check if already in API (has source_id)
+                existing_source_id = existing_ids.get(sha)
+                
+                if is_video(file_path):
+                    tech_data = self._analyzer.analyze_video(file_path)
+                    
+                    if existing_source_id:
+                        # Reuse existing source_id, don't save to API again
+                        source_id = existing_source_id
+                    else:
+                        # New file - use generated source_id and save to API
+                        source_id = tech_data["source_id"]
+                        batch_items.append({
+                            "document": self._repository.prepare_document(tech_data),
+                            "video_metadata": self._repository.prepare_video_metadata(source_id, tech_data),
+                        })
+                    
+                    pending_data.append((file_path, source_id, tech_data, True, rel_path))
+                    
+                elif is_image(file_path):
+                    tech_data = self._analyzer.analyze_photo(file_path)
+                    
+                    if existing_source_id:
+                        source_id = existing_source_id
+                    else:
+                        source_id = tech_data["source_id"]
+                        batch_items.append({
+                            "document": self._repository.prepare_document(tech_data),
+                            "photo_metadata": self._repository.prepare_photo_metadata(source_id, tech_data),
+                        })
+                    
+                    pending_data.append((file_path, source_id, tech_data, False, rel_path))
+                
+                if progress_callback:
+                    progress_callback(f"Analyzed: {file_path.name}", idx + 1, len(pending_files))
+            
+            # 7. Send batch to API (only NEW files)
+            if batch_items:
+                if progress_callback:
+                    progress_callback(f"Saving {len(batch_items)} new files to API...", 0, 1)
+                await self._repository.save_batch(batch_items)
             
             # Calculate average file size for parallel count
             total_size = sum(f.stat().st_size for f, _, _, _, _ in pending_data) if pending_data else 0

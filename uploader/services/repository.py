@@ -222,6 +222,32 @@ class MetadataRepository(IMetadataRepository):
         }
     
     # =========================================================================
+    # Lookup Operations
+    # =========================================================================
+    
+    async def lookup_by_sha256(self, sha256_list: List[str]) -> Dict[str, str]:
+        """
+        Lookup existing documents by SHA256 hashes.
+        
+        Used for resume: find source_ids for files that were already saved to API
+        but not yet uploaded to MEGA.
+        
+        Args:
+            sha256_list: List of SHA256 hashes to lookup
+            
+        Returns:
+            Dict mapping sha256 -> source_id for existing documents
+        """
+        if not sha256_list:
+            return {}
+        
+        try:
+            response = await self._api.post("/documents/lookup", json={"sha256_list": sha256_list})
+            return response.json().get("found", {})
+        except Exception:
+            return {}
+    
+    # =========================================================================
     # Batch Operations
     # =========================================================================
     
