@@ -17,8 +17,9 @@ Supports:
 - Social video upload (with channel metadata)
 """
 from pathlib import Path
-from typing import Optional, List, Callable
-from dataclasses import dataclass
+from typing import Optional, List, Callable, Tuple
+from dataclasses import dataclass, field
+import asyncio
 
 from .models import UploadResult, UploadStatus, SocialInfo, UploadConfig, TelegramInfo
 from .protocols import IStorageClient
@@ -46,6 +47,18 @@ class FolderUploadResult:
     @property
     def all_success(self) -> bool:
         return self.failed_files == 0
+
+
+@dataclass
+class UploadTask:
+    """Task for parallel upload."""
+    file_path: Path
+    source_id: str
+    tech_data: dict
+    is_video: bool
+    rel_path: Path
+    mega_dest: str
+    file_size: int = 0
 
 
 class UploadOrchestrator:
