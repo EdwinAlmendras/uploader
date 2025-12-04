@@ -9,14 +9,13 @@ description = "Centralized upload orchestration for media files"
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.25.0",
-    "megapy @ git+https://github.com/EdwinAlmendras/megapy.git",
-    "mediakit @ git+https://github.com/EdwinAlmendras/mediakit.git",
 ]
 
-[project.optional-dependencies.managed]
-mega-account = ["mega-account"]
-
 [project.optional-dependencies]
+managed = [
+    "mega-account",
+]
+
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
