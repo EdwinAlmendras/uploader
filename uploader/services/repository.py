@@ -28,6 +28,15 @@ class MetadataRepository(IMetadataRepository):
         """
         self._api = api_client
     
+    @staticmethod
+    def _to_iso(value) -> Optional[str]:
+        """Convert datetime to ISO string, or return string as-is."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+    
     async def save_document(self, data: Dict[str, Any]) -> None:
         """
         Save base document.
@@ -58,7 +67,7 @@ class MetadataRepository(IMetadataRepository):
             "height": data.get("height"),
             "camera": data.get("camera"),
             "orientation": data.get("orientation"),
-            "creation_date": data.get("creation_date"),
+            "creation_date": self._to_iso(data.get("creation_date")),
             "exif": data.get("tags") or data.get("exif") or {},
         })
     
@@ -98,7 +107,7 @@ class MetadataRepository(IMetadataRepository):
             "audio_bitrate": data.get("audio_bitrate"),
             # Tags
             "tags": data.get("tags"),
-            "creation_time": data.get("creation_time"),
+            "creation_time": self._to_iso(data.get("creation_time")),
             "encoder": data.get("encoder"),
         })
     
@@ -236,7 +245,7 @@ class MetadataRepository(IMetadataRepository):
             "audio_channels": data.get("audio_channels"),
             "audio_bitrate": data.get("audio_bitrate"),
             "tags": data.get("tags"),
-            "creation_time": data.get("creation_time"),
+            "creation_time": self._to_iso(data.get("creation_time")),
             "encoder": data.get("encoder"),
         }
     
@@ -248,7 +257,7 @@ class MetadataRepository(IMetadataRepository):
             "height": data.get("height"),
             "camera": data.get("camera"),
             "orientation": data.get("orientation"),
-            "creation_date": data.get("creation_date"),
+            "creation_date": self._to_iso(data.get("creation_date")),
             "exif": data.get("tags") or data.get("exif") or {},
         }
 
