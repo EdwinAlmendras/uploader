@@ -37,6 +37,32 @@ class MetadataRepository(IMetadataRepository):
             return value.isoformat()
         return str(value)
     
+    @staticmethod
+    def _sanitize_value(value):
+        """Convert non-JSON-serializable values to JSON-compatible types."""
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, bytes):
+            return value.decode('utf-8', errors='replace')
+        if isinstance(value, dict):
+            return {k: MetadataRepository._sanitize_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [MetadataRepository._sanitize_value(v) for v in value]
+        # Handle Pillow IFDRational, fractions, etc.
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return str(value)
+    
+    @classmethod
+    def _sanitize_dict(cls, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize dictionary for JSON serialization."""
+        return {k: cls._sanitize_value(v) for k, v in data.items()}
+    
     async def save_document(self, data: Dict[str, Any]) -> None:
         """
         Save base document.
@@ -61,6 +87,7 @@ class MetadataRepository(IMetadataRepository):
             document_id: Reference to document
             data: Photo metadata from analyzer
         """
+        exif_data = data.get("tags") or data.get("exif") or {}
         await self._api.post("/photos", json={
             "document_id": document_id,
             "width": data.get("width"),
@@ -68,7 +95,7 @@ class MetadataRepository(IMetadataRepository):
             "camera": data.get("camera"),
             "orientation": data.get("orientation"),
             "creation_date": self._to_iso(data.get("creation_date")),
-            "exif": data.get("tags") or data.get("exif") or {},
+            "exif": self._sanitize_dict(exif_data) if exif_data else {},
         })
     
     async def save_video_metadata(self, document_id: str, data: Dict[str, Any]) -> None:
@@ -106,7 +133,7 @@ class MetadataRepository(IMetadataRepository):
             "audio_channels": data.get("audio_channels"),
             "audio_bitrate": data.get("audio_bitrate"),
             # Tags
-            "tags": data.get("tags"),
+            "tags": self._sanitize_dict(data.get("tags")) if data.get("tags") else None,
             "creation_time": self._to_iso(data.get("creation_time")),
             "encoder": data.get("encoder"),
         })
@@ -244,13 +271,14 @@ class MetadataRepository(IMetadataRepository):
             "audio_sample_rate": data.get("audio_sample_rate"),
             "audio_channels": data.get("audio_channels"),
             "audio_bitrate": data.get("audio_bitrate"),
-            "tags": data.get("tags"),
+            "tags": self._sanitize_dict(data.get("tags")) if data.get("tags") else None,
             "creation_time": self._to_iso(data.get("creation_time")),
             "encoder": data.get("encoder"),
         }
     
     def prepare_photo_metadata(self, document_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare photo metadata dict for batch."""
+        exif_data = data.get("tags") or data.get("exif") or {}
         return {
             "document_id": document_id,
             "width": data.get("width"),
@@ -258,7 +286,7 @@ class MetadataRepository(IMetadataRepository):
             "camera": data.get("camera"),
             "orientation": data.get("orientation"),
             "creation_date": self._to_iso(data.get("creation_date")),
-            "exif": data.get("tags") or data.get("exif") or {},
+            "exif": self._sanitize_dict(exif_data) if exif_data else {},
         }
 
 
