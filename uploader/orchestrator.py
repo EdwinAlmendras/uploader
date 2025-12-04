@@ -61,6 +61,23 @@ class UploadTask:
     file_size: int = 0
 
 
+def _get_parallel_count(avg_size: float) -> int:
+    """
+    Get optimal parallel upload count based on average file size.
+    
+    Small files benefit from more parallelism.
+    Large files already use 21 connections each, so limit parallelism.
+    """
+    MB = 1024 * 1024
+    
+    if avg_size < 1 * MB:
+        return 10  # Small files: high parallelism
+    elif avg_size < 10 * MB:
+        return 6   # Medium files: moderate parallelism
+    else:
+        return 3   # Large files: low parallelism (each uses 21 connections)
+
+
 class UploadOrchestrator:
     """
     Orchestrates video uploads using injected services.
@@ -510,43 +527,83 @@ class UploadOrchestrator:
             dest_path = f"{dest}/{folder_path.name}" if dest else folder_path.name
             root_handle = await self._storage.create_folder(dest_path)
             
+            # Calculate average file size for parallel count
+            total_size = sum(f.stat().st_size for f, _, _, _, _ in file_data)
+            avg_size = total_size / len(file_data) if file_data else 0
+            parallel_count = _get_parallel_count(avg_size)
+            
+            if progress_callback:
+                progress_callback(f"Uploading with {parallel_count} parallel uploads...", 0, total)
+            
+            # Prepare upload tasks
+            upload_tasks: List[UploadTask] = []
+            for file_path, source_id, tech_data, is_vid, rel_path in file_data:
+                mega_dest = f"{dest_path}/{rel_path.parent}" if rel_path.parent != Path(".") else dest_path
+                upload_tasks.append(UploadTask(
+                    file_path=file_path,
+                    source_id=source_id,
+                    tech_data=tech_data,
+                    is_video=is_vid,
+                    rel_path=rel_path,
+                    mega_dest=mega_dest,
+                    file_size=file_path.stat().st_size
+                ))
+            
+            # Upload with controlled parallelism
             results: List[UploadResult] = []
             uploaded = 0
             failed = 0
+            completed = 0
             
-            for idx, (file_path, source_id, tech_data, is_vid, rel_path) in enumerate(file_data):
-                if progress_callback:
-                    progress_callback(f"Uploading: {file_path.name}", idx + 1, total)
+            semaphore = asyncio.Semaphore(parallel_count)
+            
+            async def upload_one(task: UploadTask) -> UploadResult:
+                async with semaphore:
+                    try:
+                        handle = await self._storage.upload_video(
+                            task.file_path, task.mega_dest, task.source_id, None
+                        )
+                        
+                        if not handle:
+                            return UploadResult.fail(task.file_path.name, "Upload failed")
+                        
+                        # Generate and upload preview for videos
+                        preview_handle = None
+                        if task.is_video and self._config.generate_preview:
+                            duration = task.tech_data.get("duration", 0)
+                            preview_handle = await self._upload_preview(
+                                task.file_path, task.source_id, duration
+                            )
+                        
+                        return UploadResult.ok(
+                            source_id=task.source_id,
+                            filename=task.file_path.name,
+                            mega_handle=handle,
+                            preview_handle=preview_handle
+                        )
+                    except Exception as e:
+                        return UploadResult.fail(task.file_path.name, str(e))
+            
+            # Run all uploads with progress tracking
+            async def run_with_progress():
+                nonlocal completed, uploaded, failed
                 
-                try:
-                    # Determine MEGA destination
-                    mega_dest = f"{dest_path}/{rel_path.parent}" if rel_path.parent != Path(".") else dest_path
+                tasks = [upload_one(t) for t in upload_tasks]
+                
+                for coro in asyncio.as_completed(tasks):
+                    result = await coro
+                    results.append(result)
+                    completed += 1
                     
-                    # Upload file
-                    handle = await self._storage.upload_video(file_path, mega_dest, source_id, None)
-                    
-                    if not handle:
-                        results.append(UploadResult.fail(file_path.name, "Upload failed"))
+                    if result.success:
+                        uploaded += 1
+                    else:
                         failed += 1
-                        continue
                     
-                    # Generate and upload preview for videos
-                    preview_handle = None
-                    if is_vid and self._config.generate_preview:
-                        duration = tech_data.get("duration", 0)
-                        preview_handle = await self._upload_preview(file_path, source_id, duration)
-                    
-                    results.append(UploadResult.ok(
-                        source_id=source_id,
-                        filename=file_path.name,
-                        mega_handle=handle,
-                        preview_handle=preview_handle
-                    ))
-                    uploaded += 1
-                    
-                except Exception as e:
-                    results.append(UploadResult.fail(file_path.name, str(e)))
-                    failed += 1
+                    if progress_callback:
+                        progress_callback(f"Uploaded: {result.filename}", completed, total)
+            
+            await run_with_progress()
             
             return FolderUploadResult(
                 success=failed == 0,
