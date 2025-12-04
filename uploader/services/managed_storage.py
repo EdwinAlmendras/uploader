@@ -58,8 +58,8 @@ class ManagedStorageService:
             buffer_mb=buffer_mb,
             auto_create=auto_create
         )
-        self._preview_folder_handle: Optional[str] = None
-        self._folder_cache: Dict[str, str] = {}  # path -> handle cache
+        self._folder_cache: Dict[str, Dict[str, str]] = {}  # account_name -> {path -> handle} cache
+        self._last_account: Optional[str] = None
         self._started = False
     
     @property
@@ -112,8 +112,14 @@ class ManagedStorageService:
         # Get client with enough space
         client = await self._manager.get_client_for(file_size)
         
-        # Get or create destination folder
-        dest_handle = await self._get_or_create_folder(client, dest)
+        # Track account changes and clear cache if needed
+        current_account = self._manager._current_account
+        if current_account != self._last_account:
+            # Account changed - cache is still valid per account, but we track it
+            self._last_account = current_account
+        
+        # Get or create destination folder (uses account-specific cache)
+        dest_handle = await self._get_or_create_folder(client, dest, current_account)
         
         # Upload with mega_id (flat 'm' attribute)
         node = await client.upload(
@@ -146,10 +152,18 @@ class ManagedStorageService:
         """
         # Use any available client
         client = await self._manager.get_client_for(0)
-        return await self._get_or_create_folder(client, path)
+        current_account = self._manager._current_account or "default"
+        return await self._get_or_create_folder(client, path, current_account)
     
-    async def _get_or_create_folder(self, client, path: str) -> Optional[str]:
-        """Get or create folder, creating parents as needed. Uses cache."""
+    async def _get_or_create_folder(self, client, path: str, account_name: Optional[str] = None) -> Optional[str]:
+        """
+        Get or create folder, creating parents as needed. Uses account-specific cache.
+        
+        Args:
+            client: MegaClient instance
+            path: Folder path
+            account_name: Account name for cache (required for multi-account)
+        """
         if not path:
             root = await client.get_root()
             return root.handle if root else None
@@ -157,14 +171,23 @@ class ManagedStorageService:
         # Normalize path
         path = path.strip("/")
         
+        # Get account-specific cache
+        if not account_name:
+            account_name = self._manager._current_account or "default"
+        
+        if account_name not in self._folder_cache:
+            self._folder_cache[account_name] = {}
+        
+        account_cache = self._folder_cache[account_name]
+        
         # Check cache first
-        if path in self._folder_cache:
-            return self._folder_cache[path]
+        if path in account_cache:
+            return account_cache[path]
         
         # Check if exists in MEGA
         node = await client.get(f"/{path}")
         if node:
-            self._folder_cache[path] = node.handle
+            account_cache[path] = node.handle
             return node.handle
         
         # Create path recursively
@@ -176,8 +199,8 @@ class ManagedStorageService:
             current_path = f"{current_path}/{part}" if current_path else part
             
             # Check cache for intermediate paths
-            if current_path in self._folder_cache:
-                current_handle = self._folder_cache[current_path]
+            if current_path in account_cache:
+                current_handle = account_cache[current_path]
                 continue
             
             node = await client.get(f"/{current_path}")
@@ -194,7 +217,7 @@ class ManagedStorageService:
                 current_handle = new_folder.handle
             
             # Cache intermediate path
-            self._folder_cache[current_path] = current_handle
+            account_cache[current_path] = current_handle
         
         return current_handle
     
@@ -219,9 +242,10 @@ class ManagedStorageService:
             
             # Get client with enough space
             client = await self._manager.get_client_for(file_size)
+            current_account = self._manager._current_account or "default"
             
             # Get or create .previews folder
-            folder_handle = await self._ensure_preview_folder(client)
+            folder_handle = await self._ensure_preview_folder(client, current_account)
             
             if not folder_handle:
                 print(f"[storage] Failed to get/create .previews folder")
@@ -241,31 +265,48 @@ class ManagedStorageService:
             print(f"[storage] Upload preview error: {e}")
             return None
     
-    async def _ensure_preview_folder(self, client) -> Optional[str]:
+    async def _ensure_preview_folder(self, client, account_name: Optional[str] = None) -> Optional[str]:
         """
         Ensure /.previews/ folder exists in MEGA root.
+        
+        Uses account-specific cache for preview folder handle.
+        
+        Args:
+            client: MegaClient instance
+            account_name: Account name for cache (required for multi-account)
         
         Returns:
             Handle of preview folder
         """
-        if self._preview_folder_handle:
-            return self._preview_folder_handle
+        if not account_name:
+            account_name = self._manager._current_account or "default"
+        
+        # Use account-specific cache key
+        cache_key = f"_preview_{account_name}"
+        
+        # Check if we have cached handle for this account
+        if hasattr(self, cache_key):
+            return getattr(self, cache_key)
         
         try:
             # Try to get existing folder
             folder = await client.get("/.previews")
             
             if folder:
-                self._preview_folder_handle = folder.handle
+                handle = folder.handle
             else:
                 # Create folder in root
                 root = await client.get_root()
                 if root:
                     folder = await client.create_folder(".previews", root.handle)
-                    self._preview_folder_handle = folder.handle
-                    print(f"[storage] Created /.previews folder")
+                    handle = folder.handle
+                    print(f"[storage] Created /.previews folder in account {account_name}")
+                else:
+                    return None
             
-            return self._preview_folder_handle
+            # Cache handle for this account
+            setattr(self, cache_key, handle)
+            return handle
         except Exception as e:
             print(f"[storage] Error creating .previews folder: {e}")
             return None
