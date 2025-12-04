@@ -274,7 +274,31 @@ class HTTPAPIClient:
             await self._client.aclose()
     
     async def post(self, endpoint: str, json: Dict) -> Any:
-        return await self._client.post(endpoint, json=json)
+        if not self._client:
+            raise RuntimeError("HTTPAPIClient not initialized. Use 'async with' context.")
+        
+        response = await self._client.post(endpoint, json=json)
+        
+        if response.status_code >= 400:
+            try:
+                error_detail = response.json()
+            except:
+                error_detail = response.text
+            raise RuntimeError(f"API error {response.status_code} on POST {endpoint}: {error_detail}")
+        
+        return response
     
     async def get(self, endpoint: str) -> Any:
-        return await self._client.get(endpoint)
+        if not self._client:
+            raise RuntimeError("HTTPAPIClient not initialized. Use 'async with' context.")
+        
+        response = await self._client.get(endpoint)
+        
+        if response.status_code >= 400:
+            try:
+                error_detail = response.json()
+            except:
+                error_detail = response.text
+            raise RuntimeError(f"API error {response.status_code} on GET {endpoint}: {error_detail}")
+        
+        return response

@@ -469,6 +469,9 @@ class UploadOrchestrator:
                 error=f"Not a directory: {folder_path}"
             )
         
+        # Track total for error reporting
+        total = 0
+        
         try:
             # 1. Collect all files
             all_files = self._collect_files(folder_path)
@@ -481,7 +484,8 @@ class UploadOrchestrator:
                     total_files=0,
                     uploaded_files=0,
                     failed_files=0,
-                    results=[]
+                    results=[],
+                    error="No media files found in folder"
                 )
             
             # 2. Analyze all files and prepare batch
@@ -616,14 +620,17 @@ class UploadOrchestrator:
             )
             
         except Exception as e:
+            import traceback
+            error_msg = f"{str(e)}\n\n{traceback.format_exc()}"
+            print(f"\n❌ UPLOAD ERROR: {error_msg}")
             return FolderUploadResult(
                 success=False,
                 folder_name=folder_path.name,
-                total_files=0,
+                total_files=total,
                 uploaded_files=0,
-                failed_files=0,
+                failed_files=total,
                 results=[],
-                error=str(e)
+                error=error_msg
             )
     
     def _collect_files(self, folder: Path) -> List[Path]:

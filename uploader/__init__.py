@@ -38,6 +38,7 @@ from .services import (
     MetadataRepository,
     PreviewService,
     StorageService,
+    ManagedStorageService,
 )
 
 __version__ = "0.1.0"
@@ -56,4 +57,5 @@ __all__ = [
     "MetadataRepository",
     "PreviewService",
     "StorageService",
+    "ManagedStorageService",
 ]
