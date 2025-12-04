@@ -1,85 +1,13 @@
 """
 Upload Orchestrator - Coordinates upload workflow using services.
 
-Implements Template Method pattern for upload flow.
-Uses Dependency Injection for services.
-
-Flow:
-1. Analyze video/photo (AnalyzerService)
-2. Save to DB (MetadataRepository)
-3. Upload to MEGA (StorageService)
-4. Optional: Generate and upload preview
-
-Supports:
-- Single video upload
-- Single photo upload
-- Folder upload (preserves directory structure)
-- Social video upload (with channel metadata)
+This module maintains backward compatibility by re-exporting from the refactored orchestrator package.
+The code has been refactored into smaller, focused classes in the orchestrator/ package.
 """
-from pathlib import Path
-from typing import Optional, List, Callable, Tuple
-from dataclasses import dataclass, field
-import asyncio
+# Re-export for backward compatibility
+from .orchestrator import UploadOrchestrator, FolderUploadResult, UploadTask
 
-from .models import UploadResult, UploadStatus, SocialInfo, UploadConfig, TelegramInfo
-from .protocols import IStorageClient
-from .services.analyzer import AnalyzerService
-from .services.repository import MetadataRepository, HTTPAPIClient
-from .services.preview import PreviewService
-from .services.storage import StorageService
-from .services.resume import sha256_file
-
-# Import extensions from mediakit
-from mediakit import is_video, is_image
-
-
-@dataclass
-class FolderUploadResult:
-    """Result of folder upload."""
-    success: bool
-    folder_name: str
-    total_files: int
-    uploaded_files: int
-    failed_files: int
-    results: List[UploadResult]
-    mega_folder_handle: Optional[str] = None
-    error: Optional[str] = None
-    
-    @property
-    def all_success(self) -> bool:
-        return self.failed_files == 0
-
-
-@dataclass
-class UploadTask:
-    """Task for parallel upload."""
-    file_path: Path
-    source_id: str
-    tech_data: dict
-    is_video: bool
-    rel_path: Path
-    mega_dest: str
-    file_size: int = 0
-
-
-def _get_parallel_count(avg_size: float) -> int:
-    """
-    Get optimal parallel upload count based on average file size.
-    
-    Small files benefit from more parallelism.
-    Large files already use 21 connections each, so limit parallelism.
-    """
-    MB = 1024 * 1024
-    
-    if avg_size < 1 * MB:
-        return 10  # Small files: high parallelism
-    elif avg_size < 10 * MB:
-        return 6   # Medium files: moderate parallelism
-    else:
-        return 3   # Large files: low parallelism (each uses 21 connections)
-
-
-class UploadOrchestrator:
+__all__ = ["UploadOrchestrator", "FolderUploadResult", "UploadTask"]
     """
     Orchestrates video uploads using injected services.
     
@@ -391,10 +319,12 @@ class UploadOrchestrator:
             if not mega_handle:
                 return UploadResult.fail(path.name, "Upload to MEGA failed")
             
-            # 5. Generate and upload preview for videos
+            # 5. Generate and upload preview for videos (non-blocking)
+            # Run in background to avoid blocking upload queue
             preview_handle = None
             if is_video and self._config.generate_preview:
-                preview_handle = await self._upload_preview(path, source_id, duration)
+                # Fire-and-forget: generate preview in background
+                asyncio.create_task(self._upload_preview_background(path, source_id, duration))
             
             return UploadResult.ok(
                 source_id=source_id,
@@ -446,6 +376,18 @@ class UploadOrchestrator:
         except Exception as e:
             print(f"[preview] Error: {e}")
             return None
+    
+    async def _upload_preview_background(
+        self,
+        path: Path,
+        source_id: str,
+        duration: float
+    ):
+        """Generate and upload preview in background (non-blocking)."""
+        try:
+            await self._upload_preview(path, source_id, duration)
+        except Exception as e:
+            print(f"[preview] Background error for {source_id}: {e}")
     
     async def upload_folder(
         self,
