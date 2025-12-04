@@ -27,7 +27,7 @@ from .services.analyzer import AnalyzerService
 from .services.repository import MetadataRepository, HTTPAPIClient
 from .services.preview import PreviewService
 from .services.storage import StorageService
-from .services.resume import ResumeService
+# ResumeService removed - using simple exists() check instead
 
 # Import extensions from mediakit
 from mediakit import is_video, is_image
@@ -547,15 +547,17 @@ class UploadOrchestrator:
             dest_path = f"{dest}/{folder_path.name}" if dest else folder_path.name
             root_handle = await self._storage.create_folder(dest_path)
             
-            # 4.1 Check existing files for resume support (using 'm' attribute)
-            resume_service = ResumeService(self._storage)
-            uploaded_ids = await resume_service.get_uploaded_ids(dest_path)
-            
-            # Filter out already uploaded files by source_id
+            # 4.1 Check existing files in MEGA for resume support
             pending_data = []
             skipped = 0
             for file_path, source_id, tech_data, is_vid, rel_path in file_data:
-                if source_id in uploaded_ids:
+                # Build target path in MEGA
+                mega_dest = f"{dest_path}/{rel_path.parent}" if rel_path.parent != Path(".") else dest_path
+                target_path = f"{mega_dest}/{file_path.name}"
+                
+                # Check if file already exists in MEGA
+                exists = await self._storage.exists(target_path)
+                if exists:
                     skipped += 1
                     if progress_callback:
                         progress_callback(f"Skipped (exists): {file_path.name}", skipped, total)
@@ -563,7 +565,7 @@ class UploadOrchestrator:
                     pending_data.append((file_path, source_id, tech_data, is_vid, rel_path))
             
             if skipped > 0:
-                print(f"[resume] Skipped {skipped} already uploaded files (by source_id)")
+                print(f"[resume] Skipped {skipped} files already in MEGA")
             
             # Calculate average file size for parallel count
             total_size = sum(f.stat().st_size for f, _, _, _, _ in pending_data) if pending_data else 0
