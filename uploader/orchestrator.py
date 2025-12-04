@@ -27,6 +27,7 @@ from .services.analyzer import AnalyzerService
 from .services.repository import MetadataRepository, HTTPAPIClient
 from .services.preview import PreviewService
 from .services.storage import StorageService
+from .services.resume import ResumeService
 
 # Import extensions from mediakit
 from mediakit import is_video, is_image
@@ -546,16 +547,15 @@ class UploadOrchestrator:
             dest_path = f"{dest}/{folder_path.name}" if dest else folder_path.name
             root_handle = await self._storage.create_folder(dest_path)
             
-            # 4.1 Check existing files for resume support
-            existing_files = await self._get_existing_files(dest_path)
+            # 4.1 Check existing files for resume support (using 'm' attribute)
+            resume_service = ResumeService(self._storage)
+            uploaded_ids = await resume_service.get_uploaded_ids(dest_path)
             
-            # Filter out already uploaded files
+            # Filter out already uploaded files by source_id
             pending_data = []
             skipped = 0
             for file_path, source_id, tech_data, is_vid, rel_path in file_data:
-                # Check if file already exists by source_id (filename is source_id.ext in MEGA)
-                filename = f"{source_id}{file_path.suffix}"
-                if filename in existing_files or file_path.name in existing_files:
+                if source_id in uploaded_ids:
                     skipped += 1
                     if progress_callback:
                         progress_callback(f"Skipped (exists): {file_path.name}", skipped, total)
@@ -563,7 +563,7 @@ class UploadOrchestrator:
                     pending_data.append((file_path, source_id, tech_data, is_vid, rel_path))
             
             if skipped > 0:
-                print(f"[resume] Skipped {skipped} already uploaded files")
+                print(f"[resume] Skipped {skipped} already uploaded files (by source_id)")
             
             # Calculate average file size for parallel count
             total_size = sum(f.stat().st_size for f, _, _, _, _ in pending_data) if pending_data else 0
