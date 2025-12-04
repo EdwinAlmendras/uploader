@@ -546,17 +546,36 @@ class UploadOrchestrator:
             dest_path = f"{dest}/{folder_path.name}" if dest else folder_path.name
             root_handle = await self._storage.create_folder(dest_path)
             
+            # 4.1 Check existing files for resume support
+            existing_files = await self._get_existing_files(dest_path)
+            
+            # Filter out already uploaded files
+            pending_data = []
+            skipped = 0
+            for file_path, source_id, tech_data, is_vid, rel_path in file_data:
+                # Check if file already exists by source_id (filename is source_id.ext in MEGA)
+                filename = f"{source_id}{file_path.suffix}"
+                if filename in existing_files or file_path.name in existing_files:
+                    skipped += 1
+                    if progress_callback:
+                        progress_callback(f"Skipped (exists): {file_path.name}", skipped, total)
+                else:
+                    pending_data.append((file_path, source_id, tech_data, is_vid, rel_path))
+            
+            if skipped > 0:
+                print(f"[resume] Skipped {skipped} already uploaded files")
+            
             # Calculate average file size for parallel count
-            total_size = sum(f.stat().st_size for f, _, _, _, _ in file_data)
-            avg_size = total_size / len(file_data) if file_data else 0
+            total_size = sum(f.stat().st_size for f, _, _, _, _ in pending_data) if pending_data else 0
+            avg_size = total_size / len(pending_data) if pending_data else 0
             parallel_count = _get_parallel_count(avg_size)
             
             if progress_callback:
                 progress_callback(f"Uploading with {parallel_count} parallel uploads...", 0, total)
             
-            # Prepare upload tasks
+            # Prepare upload tasks (only pending files)
             upload_tasks: List[UploadTask] = []
-            for file_path, source_id, tech_data, is_vid, rel_path in file_data:
+            for file_path, source_id, tech_data, is_vid, rel_path in pending_data:
                 mega_dest = f"{dest_path}/{rel_path.parent}" if rel_path.parent != Path(".") else dest_path
                 upload_tasks.append(UploadTask(
                     file_path=file_path,
@@ -628,7 +647,7 @@ class UploadOrchestrator:
                 success=failed == 0,
                 folder_name=folder_path.name,
                 total_files=total,
-                uploaded_files=uploaded,
+                uploaded_files=uploaded + skipped,  # Include skipped as "uploaded"
                 failed_files=failed,
                 results=results,
                 mega_folder_handle=root_handle
@@ -655,3 +674,21 @@ class UploadOrchestrator:
             if item.is_file() and (is_video(item) or is_image(item)):
                 files.append(item)
         return sorted(files)
+    
+    async def _get_existing_files(self, dest_path: str) -> set:
+        """Get set of existing filenames in MEGA destination (for resume support)."""
+        try:
+            if hasattr(self._storage, 'list_files'):
+                return await self._storage.list_files(dest_path)
+            elif hasattr(self._storage, '_storage') and hasattr(self._storage._storage, 'list_all'):
+                # ManagedStorageService
+                items = await self._storage._storage.manager.list_all(dest_path)
+                return {node.name for _, node in items}
+            elif hasattr(self._storage, '_client'):
+                # Direct storage client
+                node = await self._storage._client.get(dest_path)
+                if node and node.is_folder:
+                    return {child.name for child in node.children}
+        except Exception as e:
+            print(f"[resume] Could not check existing files: {e}")
+        return set()
