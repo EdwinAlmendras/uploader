@@ -178,7 +178,12 @@ class UploadOrchestrator:
         Example:
             process = orchestrator.upload_folder(folder_path, dest)
             process.on_file_start(lambda file: print(f"Starting: {file}"))
-            process.on_file_complete(lambda result: print(f"Done: {result.filename}"))
+            process.on_file_progress(lambda file, progress: 
+            print(f"📊 {file.name}: {progress.bytes_uploaded}/{progress.total_bytes} bytes ({progress.percent:.1f}%)"))
+            process.on_file_complete(lambda result: print(f"✅ Done: {result.filename}"))
+            process.on_file_fail(lambda result: print(f"❌ Failed: {result.filename}"))
+            process.on_finish(lambda result: print(f"🎉 Finished! {result.uploaded_files}/{result.total_files}"))
+        
             result = await process.wait()  # wait() starts automatically if needed
         
         Args:
