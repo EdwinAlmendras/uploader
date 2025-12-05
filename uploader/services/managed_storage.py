@@ -198,20 +198,25 @@ class ManagedStorageService:
     
     async def exists(self, path: str) -> bool:
         """
-        Check if file/folder exists in MEGA.
+        Check if file/folder exists in MEGA across ALL accounts.
         
         Args:
             path: Full path to check (e.g., "/Folder/file.mp4")
             
         Returns:
-            True if exists, False otherwise
+            True if exists in any account, False otherwise
         """
         try:
-            client = await self._manager.get_client_for(0)
-            path = path if path.startswith("/") else f"/{path}"
-            node = await client.get(path)
-            return node is not None
-        except Exception:
+            # Normalize path - ensure it starts with /
+            if not path.startswith("/"):
+                path = f"/{path}"
+            # Use AccountManager.exists() which searches all accounts
+            exists = await self._manager.exists(path)
+            if exists:
+                logger.debug(f"File exists in MEGA: {path}")
+            return exists
+        except Exception as e:
+            logger.debug(f"Error checking if file exists {path}: {e}")
             return False
     
     async def create_folder(self, path: str) -> Optional[str]:
