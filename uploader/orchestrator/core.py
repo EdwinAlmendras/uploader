@@ -1,6 +1,6 @@
 """Core orchestrator - coordinates all upload workflows."""
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from ..models import UploadResult, UploadConfig, SocialInfo, TelegramInfo
 from ..protocols import IStorageClient
@@ -13,6 +13,9 @@ from .single_upload import SingleUploadHandler
 from .folder_upload import FolderUploadHandler
 from .preview_handler import PreviewHandler
 from .models import FolderUploadResult
+
+if TYPE_CHECKING:
+    from .folder_upload import FolderUploadProcess
 
 
 class UploadOrchestrator:
@@ -117,6 +120,7 @@ class UploadOrchestrator:
         progress_callback=None
     ) -> UploadResult:
         """Upload video with metadata."""
+        assert self._single_handler is not None
         return await self._single_handler.upload(path, dest, progress_callback)
     
     async def upload_social(
@@ -127,6 +131,7 @@ class UploadOrchestrator:
         progress_callback=None
     ) -> UploadResult:
         """Upload social video with channel metadata."""
+        assert self._single_handler is not None
         return await self._single_handler.upload_social(path, social_info, dest, progress_callback)
     
     async def upload_photo(
@@ -136,6 +141,7 @@ class UploadOrchestrator:
         progress_callback=None
     ) -> UploadResult:
         """Upload photo with metadata."""
+        assert self._single_handler is not None
         return await self._single_handler.upload_photo(path, dest, progress_callback)
     
     async def upload_auto(
@@ -145,6 +151,7 @@ class UploadOrchestrator:
         progress_callback=None
     ) -> UploadResult:
         """Auto-detect type and upload."""
+        assert self._single_handler is not None
         return await self._single_handler.upload_auto(path, dest, progress_callback)
     
     async def upload_telegram(
@@ -155,14 +162,32 @@ class UploadOrchestrator:
         progress_callback=None
     ) -> UploadResult:
         """Upload media with optional Telegram metadata."""
+        assert self._single_handler is not None
         return await self._single_handler.upload_telegram(path, telegram_info, dest, progress_callback)
     
-    async def upload_folder(
+    def upload_folder(
         self,
         folder_path: Path,
         dest: Optional[str] = None,
-        progress_callback=None
-    ) -> FolderUploadResult:
-        """Upload entire folder preserving directory structure."""
-        return await self._folder_handler.upload_folder(folder_path, dest, progress_callback)
+    ) -> "FolderUploadProcess":
+        """
+        Upload entire folder preserving directory structure with event-based progress tracking.
+        
+        Returns a FolderUploadProcess that can be started and monitored.
+        
+        Example:
+            process = orchestrator.upload_folder(folder_path, dest)
+            process.on_file_start(lambda file: print(f"Starting: {file}"))
+            process.on_file_complete(lambda result: print(f"Done: {result.filename}"))
+            result = await process.wait()  # wait() starts automatically if needed
+        
+        Args:
+            folder_path: Path to folder to upload
+            dest: Optional destination path in MEGA
+        
+        Returns:
+            FolderUploadProcess instance
+        """
+        assert self._folder_handler is not None
+        return self._folder_handler.upload_folder(folder_path, dest)
 
