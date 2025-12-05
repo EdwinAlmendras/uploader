@@ -129,7 +129,7 @@ class ManagedStorageService:
             )
             if all_accounts_low_space:
                 logger.info(f"All accounts have less than {MIN_FREE_SPACE_GB}GB free space. Creating a new account...")
-                new_account = await manager()
+                new_account = await manager.create_new_session()
                 return new_account
         else:
             logger.info("No accounts found. Creating a new account...")
