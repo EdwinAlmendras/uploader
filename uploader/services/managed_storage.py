@@ -136,6 +136,37 @@ class ManagedStorageService:
             new_account = await manager.create_new_session()
             return new_account
     
+    async def check_available_for_size(self, file_size: int) -> bool:
+        """
+        Check if there's enough space available for a file of the given size.
+        
+        If no account has enough space, it will attempt to create a new account
+        (if auto_create is enabled).
+        
+        Args:
+            file_size: Size of the file in bytes
+            
+        Returns:
+            True if space is available (or a new account was created), False otherwise
+        """
+        if not self._started:
+            await self.start()
+        
+        try:
+            # Try to get a client for this file size
+            # This will automatically create a new account if needed and auto_create is True
+            client = await self._manager.get_client_for(file_size, prompt_new=True)
+            if client:
+                # Space is available
+                return True
+            return False
+        except NoSpaceError as e:
+            logger.warning(f"No space available for {file_size / (1024**3):.2f} GB file: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error checking space availability: {e}")
+            return False
+    
     
     async def upload_video(
         self,
