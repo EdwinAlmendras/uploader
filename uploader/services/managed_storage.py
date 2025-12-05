@@ -10,14 +10,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from ..models import UploadConfig
+from mega_account import AccountManager, NoSpaceError
+import logging
 
-try:
-    from mega_account import AccountManager, NoSpaceError
-except ImportError:
-    raise ImportError(
-        "mega-account is required for ManagedStorageService. "
-        "Install it with: pip install mega-account"
-    )
+logger = logging.getLogger("uploader.services.managed_storage")
 
 
 class ManagedStorageService:
@@ -53,6 +49,11 @@ class ManagedStorageService:
             auto_create: Prompt for new account when all are full
         """
         self._config = config or UploadConfig()
+        if not sessions_dir:
+            sessions_dir = Path.home() / ".config" / "mega" / "sessions"
+        if not sessions_dir.exists():
+            sessions_dir.mkdir(parents=True, exist_ok=True)
+            
         self._manager = AccountManager(
             sessions_dir=sessions_dir,
             buffer_mb=buffer_mb,
@@ -109,6 +110,32 @@ class ManagedStorageService:
         """Unlock account after folder upload completes."""
         self._locked_account = None
         self._locked_client = None
+        
+    
+    async def check_accounts_space(self):
+        if not self._started:
+            await self.start()
+            
+        MIN_FREE_SPACE_GB = 1
+        MIN_FREE_SPACE_BYTES = MIN_FREE_SPACE_GB * 1024 * 1024 * 1024
+        
+        manager = self._manager
+        active_accounts = manager.active_accounts
+        
+        if active_accounts:
+            all_accounts_low_space = all(
+                account.space_free < MIN_FREE_SPACE_BYTES 
+                for account in active_accounts
+            )
+            if all_accounts_low_space:
+                logger.info(f"All accounts have less than {MIN_FREE_SPACE_GB}GB free space. Creating a new account...")
+                new_account = await manager()
+                return new_account
+        else:
+            logger.info("No accounts found. Creating a new account...")
+            new_account = await manager.create_new_session()
+            return new_account
+    
     
     async def upload_video(
         self,
