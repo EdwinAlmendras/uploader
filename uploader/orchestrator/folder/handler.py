@@ -6,7 +6,7 @@ from uploader.orchestrator.file_collector import FileCollector
 from uploader.orchestrator.models import FolderUploadResult
 from uploader.models import UploadConfig
 from .file_processor import FileProcessor
-from .file_existence import FileExistenceChecker
+from .file_existence import FileExistenceChecker, Blake3Deduplicator
 from .parallel_upload import ParallelUploadCoordinator
 from .process import FolderUploadProcess
 from uploader.services.analyzer import AnalyzerService
@@ -40,6 +40,7 @@ class FolderUploadHandler:
         self._file_collector = FileCollector()
         self._file_processor = FileProcessor(analyzer, repository, storage, preview_handler, config)
         self._existence_checker = FileExistenceChecker(storage)
+        self._blake3_deduplicator = Blake3Deduplicator(repository) if repository else None
         self._upload_coordinator = ParallelUploadCoordinator(self._file_processor, max_parallel=1)
         self._storage = storage
     
@@ -105,13 +106,44 @@ class FolderUploadHandler:
                 )
             
             dest_path = f"{dest}/{folder_path.name}" if dest else folder_path.name
-            pending_files, skipped = await self._existence_checker.check(
-                all_files, folder_path, dest_path, total, progress_callback
-            )
+            
+            # Step 1: Check in database by blake3_hash (MORE SECURE - detects duplicates regardless of location/name)
+            skipped_hash = 0
+            files_to_check_mega = all_files
+            if self._blake3_deduplicator:
+                logger.info("Checking files in database by blake3_hash (deduplication)")
+                existing_paths = await self._blake3_deduplicator.check(all_files, progress_callback)
+                skipped_hash = len(existing_paths)
+                
+                # Filter out files that exist in database - only check remaining in MEGA
+                if existing_paths:
+                    files_to_check_mega = [f for f in all_files if f not in existing_paths]
+                    logger.debug(
+                        "After blake3_hash check: %d files skipped (in database), %d files remaining to check in MEGA",
+                        skipped_hash, len(files_to_check_mega)
+                    )
+                else:
+                    logger.debug("After blake3_hash check: All %d files are new, checking all in MEGA", len(all_files))
+            else:
+                logger.warning("Blake3Deduplicator not available, skipping database check")
+            
+            # Step 2: Check remaining files in MEGA (fast, by path - verifies if already uploaded to expected location)
+            skipped_mega = 0
+            if files_to_check_mega:
+                logger.info("Checking remaining files in MEGA by path")
+                pending_files, skipped_mega = await self._existence_checker.check(
+                    files_to_check_mega, folder_path, dest_path, len(files_to_check_mega), progress_callback
+                )
+            else:
+                pending_files = []
+                logger.debug("No files to check in MEGA (all were skipped by blake3_hash check)")
+            
+            total_skipped = skipped_mega + skipped_hash
+            logger.info(f"Existence check summary: {total} total files, {skipped_hash} skipped by blake3_hash, {skipped_mega} skipped by MEGA path, {total_skipped} total skipped, {len(pending_files)} files to upload")
             
             if process:
                 async with process._stats_lock:
-                    process._stats["skipped"] = skipped
+                    process._stats["skipped"] = total_skipped
                 await process._events.emit("progress", process.stats)
             
             if not pending_files:
@@ -119,7 +151,7 @@ class FolderUploadHandler:
                     success=True,
                     folder_name=folder_path.name,
                     total_files=total,
-                    uploaded_files=skipped,
+                    uploaded_files=total_skipped,
                     failed_files=0,
                     results=[],
                     error=None
@@ -177,7 +209,7 @@ class FolderUploadHandler:
                 success=failed == 0,
                 folder_name=folder_path.name,
                 total_files=total,
-                uploaded_files=uploaded + skipped,
+                uploaded_files=uploaded,
                 failed_files=failed,
                 results=results,
                 mega_folder_handle=root_handle
