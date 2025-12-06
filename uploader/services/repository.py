@@ -70,14 +70,21 @@ class MetadataRepository(IMetadataRepository):
         Args:
             data: Document data from analyzer
         """
-        await self._api.post("/documents", json={
+        payload = {
             "source_id": data["source_id"],
-            "sha256sum": data["sha256sum"],
             "filename": data["filename"],
             "mimetype": data["mimetype"],
             "mtime": data["mtime"].isoformat() if data.get("mtime") else None,
             "ctime": data["ctime"].isoformat() if data.get("ctime") else None,
-        })
+        }
+        
+        # Send blake3_hash if available, otherwise sha256sum (for backward compatibility)
+        if "blake3_hash" in data:
+            payload["blake3_hash"] = data["blake3_hash"]
+        if "sha256sum" in data:
+            payload["sha256sum"] = data["sha256sum"]
+        
+        await self._api.post("/documents", json=payload)
     
     async def save_photo_metadata(self, document_id: str, data: Dict[str, Any]) -> None:
         """
@@ -225,12 +232,31 @@ class MetadataRepository(IMetadataRepository):
     # Lookup Operations
     # =========================================================================
     
-    async def lookup_by_sha256(self, sha256_list: List[str]) -> Dict[str, str]:
+    async def lookup_by_blake3(self, blake3_list: List[str]) -> Dict[str, str]:
         """
-        Lookup existing documents by SHA256 hashes.
+        Lookup existing documents by BLAKE3 hashes.
         
         Used for resume: find source_ids for files that were already saved to API
         but not yet uploaded to MEGA.
+        
+        Args:
+            blake3_list: List of BLAKE3 hashes to lookup
+            
+        Returns:
+            Dict mapping blake3_hash -> source_id for existing documents
+        """
+        if not blake3_list:
+            return {}
+        
+        try:
+            response = await self._api.post("/documents/lookup", json={"blake3_list": blake3_list})
+            return response.json().get("found", {})
+        except Exception:
+            return {}
+    
+    async def lookup_by_sha256(self, sha256_list: List[str]) -> Dict[str, str]:
+        """
+        Lookup existing documents by SHA256 hashes (legacy method).
         
         Args:
             sha256_list: List of SHA256 hashes to lookup
@@ -265,14 +291,21 @@ class MetadataRepository(IMetadataRepository):
     
     def prepare_document(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare document dict for batch."""
-        return {
+        payload = {
             "source_id": data["source_id"],
-            "sha256sum": data["sha256sum"],
             "filename": data["filename"],
             "mimetype": data["mimetype"],
             "mtime": data["mtime"].isoformat() if data.get("mtime") else None,
             "ctime": data["ctime"].isoformat() if data.get("ctime") else None,
         }
+        
+        # Include blake3_hash if available, otherwise sha256sum (for backward compatibility)
+        if "blake3_hash" in data:
+            payload["blake3_hash"] = data["blake3_hash"]
+        if "sha256sum" in data:
+            payload["sha256sum"] = data["sha256sum"]
+        
+        return payload
     
     def prepare_video_metadata(self, document_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare video metadata dict for batch."""

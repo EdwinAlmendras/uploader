@@ -3,26 +3,36 @@ Resume Service - Handles interrupted upload recovery.
 
 Flow:
 1. Check MEGA paths → skip files that exist
-2. For missing files: calculate sha256
-3. Batch API lookup: sha256 → source_id
+2. For missing files: calculate blake3_hash
+3. Batch API lookup: blake3_hash → source_id
 4. Upload with recovered source_id (or generate new)
 """
 import logging
-import hashlib
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 import httpx
+from blake3 import blake3
 
 log = logging.getLogger(__name__)
 
 
-def sha256_file(path: Path) -> str:
-    """Calculate SHA256 of file."""
-    h = hashlib.sha256()
-    with open(path, 'rb') as f:
-        for chunk in iter(lambda: f.read(8192), b''):
-            h.update(chunk)
-    return h.hexdigest()
+async def blake3_file(path: Path) -> str:
+    """Calculate BLAKE3 hash of file asynchronously (non-blocking)."""
+    def _hash_file():
+        """Synchronous hash calculation to run in thread pool."""
+        hasher = blake3()
+        with open(path, 'rb') as f:
+            # Use larger chunks for better performance
+            while True:
+                chunk = f.read(65536)  # 64KB chunks
+                if not chunk:
+                    break
+                hasher.update(chunk)
+        return hasher.hexdigest()
+    
+    # Run in thread pool to avoid blocking the event loop
+    return await asyncio.to_thread(_hash_file)
 
 
 class ResumeService:
@@ -33,7 +43,7 @@ class ResumeService:
         resume = ResumeService(api_url, mega_manager)
         pending, recovered_ids = await resume.filter_pending(files, dest_folder)
         # pending = files not in MEGA
-        # recovered_ids = {sha256: source_id} from API
+        # recovered_ids = {blake3_hash: source_id} from API
     """
     
     def __init__(self, api_url: str, storage):
@@ -53,9 +63,9 @@ class ResumeService:
             dest_folder: MEGA destination
             
         Returns:
-            (pending_files, sha256_to_source_id)
+            (pending_files, blake3_hash_to_source_id)
             - pending_files: files not in MEGA (need upload)
-            - sha256_to_source_id: recovered source_ids from API
+            - blake3_hash_to_source_id: recovered source_ids from API
         """
         # Step 1: Check which files exist in MEGA
         pending = []
@@ -74,20 +84,26 @@ class ResumeService:
         if not pending:
             return [], {}
         
-        # Step 2: Calculate sha256 for pending files
-        sha256_map = {}  # path_str → sha256
-        sha256_list = []
+        # Step 2: Calculate blake3_hash for pending files (async, non-blocking)
+        blake3_map = {}  # path_str → blake3_hash
+        blake3_list = []
         
+        # Calculate hashes concurrently for better performance
+        hash_tasks = []
         for path in pending:
-            try:
-                sha = sha256_file(path)
-                sha256_map[str(path)] = sha
-                sha256_list.append(sha)
-            except Exception as e:
-                log.warning(f"[resume] Hash failed for {path}: {e}")
+            hash_tasks.append(blake3_file(path))
+        
+        hash_results = await asyncio.gather(*hash_tasks, return_exceptions=True)
+        
+        for path, hash_result in zip(pending, hash_results):
+            if isinstance(hash_result, Exception):
+                log.warning(f"[resume] Hash failed for {path}: {hash_result}")
+            else:
+                blake3_map[str(path)] = hash_result
+                blake3_list.append(hash_result)
         
         # Step 3: Batch lookup to API → get existing source_ids
-        recovered_ids = await self._lookup_source_ids(sha256_list)
+        recovered_ids = await self._lookup_source_ids(blake3_list)
         
         if recovered_ids:
             log.info(f"[resume] Recovered {len(recovered_ids)} source_ids from API")
@@ -110,16 +126,16 @@ class ResumeService:
             pass
         return False
     
-    async def _lookup_source_ids(self, sha256_list: List[str]) -> Dict[str, str]:
-        """Batch lookup: sha256 → source_id from API."""
-        if not sha256_list or not self._api_url:
+    async def _lookup_source_ids(self, blake3_list: List[str]) -> Dict[str, str]:
+        """Batch lookup: blake3_hash → source_id from API."""
+        if not blake3_list or not self._api_url:
             return {}
         
         try:
             async with httpx.AsyncClient(timeout=30) as client:
                 resp = await client.post(
                     f"{self._api_url}/documents/lookup",
-                    json={"sha256_list": sha256_list}
+                    json={"blake3_list": blake3_list}
                 )
                 resp.raise_for_status()
                 return resp.json().get("found", {})

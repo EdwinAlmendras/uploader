@@ -349,7 +349,7 @@ class FileProcessor:
             # Analyze and save metadata
             logger.info("Analyzing %s...", file_path.name)
             if is_video(file_path):
-                tech_data = self._analyzer.analyze_video(file_path)
+                tech_data = await self._analyzer.analyze_video_async(file_path)
                 source_id = tech_data["source_id"]
                 duration = tech_data.get('duration', 0)
                 logger.info("Video analyzed: source_id=%s, duration=%.2fs", source_id, duration)
@@ -367,7 +367,7 @@ class FileProcessor:
                 return (UploadResult.ok(source_id, file_path.name, handle, None), preview_duration, preview_source_id)  # type: ignore[arg-type]
             
             elif is_image(file_path):
-                tech_data = self._analyzer.analyze_photo(file_path)
+                tech_data = await self._analyzer.analyze_photo_async(file_path)
                 source_id = tech_data["source_id"]
                 width = tech_data.get('width')
                 height = tech_data.get('height')

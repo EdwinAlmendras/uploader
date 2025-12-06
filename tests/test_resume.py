@@ -2,21 +2,23 @@
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-from uploader.services.resume import ResumeService, sha256_file
+from uploader.services.resume import ResumeService, blake3_file
 
 
-class TestSha256File:
-    """Test sha256 calculation."""
+class TestBlake3File:
+    """Test blake3 calculation."""
     
-    def test_sha256_file(self, tmp_path):
-        """Test sha256 calculation on a file."""
+    @pytest.mark.asyncio
+    async def test_blake3_file(self, tmp_path):
+        """Test blake3 calculation on a file."""
         test_file = tmp_path / "test.txt"
         test_file.write_text("hello world")
         
-        result = sha256_file(test_file)
+        result = await blake3_file(test_file)
         
-        assert len(result) == 64  # SHA256 hex length
-        assert result == "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        assert len(result) == 64  # BLAKE3 hex length (same as SHA256)
+        # BLAKE3 hash of "hello world"
+        assert result == "d74981efa70a0c880b8d8c1985d075dbcbf679b99a5f9914e5aaf96b831a9e24"
 
 
 class TestResumeService:
@@ -78,15 +80,15 @@ class TestResumeService:
         """Test filter_pending recovers source_ids from API."""
         file1 = tmp_path / "file1.mp4"
         file1.write_bytes(b"content")
-        sha = sha256_file(file1)
+        blake3_hash = await blake3_file(file1)
         
         mock_storage.exists = AsyncMock(return_value=False)
         
-        with patch.object(service, '_lookup_source_ids', return_value={sha: "abc123"}):
+        with patch.object(service, '_lookup_source_ids', return_value={blake3_hash: "abc123"}):
             pending, recovered = await service.filter_pending([file1], "/Dest")
         
         assert len(pending) == 1
-        assert recovered.get(sha) == "abc123"
+        assert recovered.get(blake3_hash) == "abc123"
     
     @pytest.mark.asyncio
     async def test_lookup_source_ids_empty_list(self, service):
@@ -98,6 +100,6 @@ class TestResumeService:
     async def test_lookup_source_ids_no_api_url(self, mock_storage):
         """Test _lookup_source_ids without API URL."""
         service = ResumeService(None, mock_storage)
-        result = await service._lookup_source_ids(["sha256"])
+        result = await service._lookup_source_ids(["blake3_hash"])
         assert result == {}
 

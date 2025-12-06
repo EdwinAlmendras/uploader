@@ -8,6 +8,7 @@ from typing import Dict, Any
 import asyncio
 
 from ..protocols import IAnalyzer
+from .resume import blake3_file
 
 # Try to import from mediakit, fallback to local definitions
 try:
@@ -68,17 +69,26 @@ class AnalyzerService(IAnalyzer):
     async def analyze_async(self, path: Path) -> Dict[str, Any]:
         """Analyze media file asynchronously."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.analyze, path)
+        tech_data = await loop.run_in_executor(None, self.analyze, path)
+        # Add blake3_hash
+        tech_data["blake3_hash"] = await blake3_file(path)
+        return tech_data
     
     async def analyze_video_async(self, path: Path) -> Dict[str, Any]:
         """Analyze video file asynchronously."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.analyze_video, path)
+        tech_data = await loop.run_in_executor(None, self.analyze_video, path)
+        # Add blake3_hash
+        tech_data["blake3_hash"] = await blake3_file(path)
+        return tech_data
     
     async def analyze_photo_async(self, path: Path) -> Dict[str, Any]:
         """Analyze photo file asynchronously."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.analyze_photo, path)
+        tech_data = await loop.run_in_executor(None, self.analyze_photo, path)
+        # Add blake3_hash
+        tech_data["blake3_hash"] = await blake3_file(path)
+        return tech_data
     
     @staticmethod
     def is_video(path: Path) -> bool:
