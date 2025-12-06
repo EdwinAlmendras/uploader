@@ -465,7 +465,7 @@ class ParallelUploadCoordinator:
         self._preview_tasks: List[asyncio.Task] = []  # Track preview generation tasks
         
         # Two semaphores: one for small files (5 concurrent), one for large files (1 concurrent)
-        self._small_file_semaphore = asyncio.Semaphore(5)
+        self._small_file_semaphore = asyncio.Semaphore(3)
         self._large_file_semaphore = asyncio.Semaphore(1)
     
     async def upload(
