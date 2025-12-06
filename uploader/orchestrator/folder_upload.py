@@ -318,8 +318,17 @@ class FileProcessor:
         self._preview_handler = preview_handler
         self._config = config
     
-    async def process(self, file_path: Path, rel_path: Path, dest_path: str, progress_callback=None) -> UploadResult:
-        """Process file: upload to MEGA, then analyze and save metadata."""
+    async def process(self, file_path: Path, rel_path: Path, dest_path: str, progress_callback=None) -> Tuple[UploadResult, Optional[float], Optional[str]]:
+        """
+        Process file: upload to MEGA, then analyze and save metadata.
+        
+        Returns immediately after upload and metadata save. Preview generation
+        is launched in background and tracked separately.
+        
+        Returns:
+            Tuple of (UploadResult, duration, source_id) for videos that need previews.
+            Duration and source_id are None for images or if preview is disabled.
+        """
         try:
             mega_dest = f"{dest_path}/{rel_path.parent}" if rel_path.parent != Path(".") else dest_path
             
@@ -329,11 +338,11 @@ class FileProcessor:
                 handle = await self._storage.upload_video(file_path, mega_dest, None, progress_callback)
                 if not handle:
                     logger.error("Failed to upload %s: upload_video returned None", file_path.name)
-                    return UploadResult.fail(file_path.name, "Upload to MEGA failed: upload_video returned None")
+                    return (UploadResult.fail(file_path.name, "Upload to MEGA failed: upload_video returned None"), None, None)
             except Exception as upload_error:
                 error_msg = str(upload_error) if str(upload_error) else f"{type(upload_error).__name__}: {repr(upload_error)}"
                 logger.error("Exception during upload of %s: %s", file_path.name, error_msg, exc_info=True)
-                return UploadResult.fail(file_path.name, f"Upload to MEGA failed: {error_msg}")
+                return (UploadResult.fail(file_path.name, f"Upload to MEGA failed: {error_msg}"), None, None)
             
             logger.info("Uploaded %s to MEGA (handle: %s)", file_path.name, handle)
             
@@ -349,17 +358,13 @@ class FileProcessor:
                 await self._repository.save_video_metadata(source_id, tech_data)
                 logger.info("Saved metadata to API for %s", file_path.name)
                 
-                preview_handle = None
-                if self._config.generate_preview:
-                    preview_handle = await self._preview_handler.upload_preview(
-                        file_path, source_id, tech_data.get("duration", 0)
-                    )
-                    if preview_handle:
-                        logger.info("Preview uploaded (handle: %s)", preview_handle)
-                
-                logger.info("Successfully completed %s", file_path.name)
-                # preview_handle can be None, which is acceptable (method accepts None as default)
-                return UploadResult.ok(source_id, file_path.name, handle, preview_handle)  # type: ignore[arg-type]
+                # Preview will be generated in background - return immediately with duration/source_id
+                # The preview task will be tracked and awaited at the end
+                logger.info("Successfully completed %s (preview will be generated in background)", file_path.name)
+                # Preview handle will be set later when background task completes
+                preview_duration = duration if self._config.generate_preview else None
+                preview_source_id = source_id if self._config.generate_preview else None
+                return (UploadResult.ok(source_id, file_path.name, handle, None), preview_duration, preview_source_id)  # type: ignore[arg-type]
             
             elif is_image(file_path):
                 tech_data = self._analyzer.analyze_photo(file_path)
@@ -373,15 +378,40 @@ class FileProcessor:
                 logger.info("Saved metadata to API for %s", file_path.name)
                 logger.info("Successfully completed %s", file_path.name)
                 # Images don't have preview handles (method accepts None as default)
-                return UploadResult.ok(source_id, file_path.name, handle, None)  # type: ignore[arg-type]
+                return (UploadResult.ok(source_id, file_path.name, handle, None), None, None)  # type: ignore[arg-type]
             
             logger.warning("Unknown file type for %s", file_path.name)
-            return UploadResult.fail(file_path.name, "Unknown file type")
+            return (UploadResult.fail(file_path.name, "Unknown file type"), None, None)
         
         except Exception as e:
             error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"
             logger.error("Error processing %s: %s", file_path.name, error_msg, exc_info=True)
-            return UploadResult.fail(file_path.name, error_msg)
+            return (UploadResult.fail(file_path.name, error_msg), None, None)
+    
+    async def generate_preview_background(
+        self,
+        file_path: Path,
+        source_id: str,
+        duration: float
+    ) -> Optional[str]:
+        """
+        Generate and upload preview in background.
+        
+        This method is called separately and doesn't block the main upload flow.
+        """
+        if not self._config.generate_preview:
+            return None
+        
+        try:
+            preview_handle = await self._preview_handler.upload_preview(
+                file_path, source_id, duration
+            )
+            if preview_handle:
+                logger.info("Preview uploaded in background (handle: %s) for %s", preview_handle, file_path.name)
+            return preview_handle
+        except Exception as e:
+            logger.error("Error generating preview for %s: %s", file_path.name, e, exc_info=True)
+            return None
 
 
 class FileExistenceChecker:
@@ -419,11 +449,24 @@ class FileExistenceChecker:
 
 
 class ParallelUploadCoordinator:
-    """Coordinates parallel file uploads with max concurrency limit."""
+    """
+    Coordinates parallel file uploads with adaptive concurrency.
+    
+    - Small files (< 5MB): up to 5 simultaneous uploads
+    - Large files (>= 5MB): 1 upload at a time
+    """
+    
+    # Threshold: 5MB in bytes
+    SMALL_FILE_THRESHOLD = 5 * 1024 * 1024  # 5MB
     
     def __init__(self, file_processor: FileProcessor, max_parallel: int = 1):
         self._file_processor = file_processor
-        self._max_parallel = max_parallel
+        self._max_parallel = max_parallel  # Legacy, not used anymore
+        self._preview_tasks: List[asyncio.Task] = []  # Track preview generation tasks
+        
+        # Two semaphores: one for small files (5 concurrent), one for large files (1 concurrent)
+        self._small_file_semaphore = asyncio.Semaphore(5)
+        self._large_file_semaphore = asyncio.Semaphore(1)
     
     async def upload(
         self,
@@ -433,38 +476,67 @@ class ParallelUploadCoordinator:
         progress_callback: Optional[Callable] = None,
         process: Optional[FolderUploadProcess] = None
     ) -> List[UploadResult]:
-        """Upload files in parallel with max concurrency."""
-        logger.info(f"Starting upload: {len(pending_files)} files (max {self._max_parallel} parallel)")
+        """
+        Upload files in parallel with adaptive concurrency.
+        
+        - Small files (< 5MB): up to 5 simultaneous uploads
+        - Large files (>= 5MB): 1 upload at a time
+        
+        Files are uploaded immediately, previews are generated in background.
+        At the end, waits for all previews to complete before returning.
+        """
+        # Count files by size for logging
+        small_count = 0
+        large_count = 0
+        for file_path, _ in pending_files:
+            try:
+                file_size = file_path.stat().st_size
+                if file_size < self.SMALL_FILE_THRESHOLD:
+                    small_count += 1
+                else:
+                    large_count += 1
+            except (OSError, AttributeError):
+                # If we can't get size, treat as small
+                small_count += 1
+        
+        logger.info(
+            f"Starting upload: {len(pending_files)} files "
+            f"({small_count} small < 5MB: max 5 parallel, "
+            f"{large_count} large >= 5MB: 1 at a time)"
+        )
+        
+        # Clear preview tasks from previous runs
+        self._preview_tasks.clear()
         
         if progress_callback:
             progress_callback(f"Uploading {len(pending_files)} files...", 0, total)
         
         results = []
-        semaphore = asyncio.Semaphore(self._max_parallel)
         
-        # Create tasks for all files
+        # Create tasks for all files (semaphore selection happens inside _upload_single_file)
         tasks = [
-            self._upload_single_file(
-                file_path=file_path,
-                rel_path=rel_path,
-                dest_path=dest_path,
-                index=idx,
-                total_files=len(pending_files),
-                semaphore=semaphore,
-                process=process
+            asyncio.create_task(
+                self._upload_single_file(
+                    file_path=file_path,
+                    rel_path=rel_path,
+                    dest_path=dest_path,
+                    index=idx,
+                    total_files=len(pending_files),
+                    process=process
+                )
             )
             for idx, (file_path, rel_path) in enumerate(pending_files, 1)
         ]
         
         # Process files as they complete
         completed = 0
-        for coro in asyncio.as_completed(tasks):
+        for task in asyncio.as_completed(tasks):
             if process and process.is_cancelled:
                 logger.info("Upload cancelled by user")
                 await self._cancel_remaining_tasks(tasks)
                 break
             
-            result = await coro
+            result = await task
             results.append(result)
             completed += 1
             
@@ -477,7 +549,22 @@ class ParallelUploadCoordinator:
         
         uploaded = sum(1 for r in results if r.success)
         failed = sum(1 for r in results if not r.success)
-        logger.info(f"Upload complete: {uploaded} successful, {failed} failed")
+        logger.info(f"File uploads complete: {uploaded} successful, {failed} failed")
+        
+        # Wait for all previews to complete
+        if self._preview_tasks:
+            logger.info(f"Waiting for {len(self._preview_tasks)} preview(s) to complete...")
+            preview_results = await asyncio.gather(*self._preview_tasks, return_exceptions=True)
+            
+            successful_previews = sum(1 for r in preview_results if r and not isinstance(r, Exception))
+            failed_previews = sum(1 for r in preview_results if isinstance(r, Exception) or r is None)
+            
+            if failed_previews > 0:
+                logger.warning(f"Preview generation: {successful_previews} successful, {failed_previews} failed")
+            else:
+                logger.info(f"All {successful_previews} preview(s) generated successfully")
+        
+        logger.info(f"Upload complete: {uploaded} files, {len(self._preview_tasks)} previews")
         
         return results
 
@@ -489,30 +576,61 @@ class ParallelUploadCoordinator:
         dest_path: str,
         index: int,
         total_files: int,
-        semaphore: asyncio.Semaphore,
         process: Optional[FolderUploadProcess]
     ) -> UploadResult:
-        """Upload a single file with proper logging and error handling."""
+        """
+        Upload a single file with proper logging and error handling.
+        
+        Automatically selects the appropriate semaphore based on file size:
+        - Small files (< 5MB): use small_file_semaphore (5 concurrent)
+        - Large files (>= 5MB): use large_file_semaphore (1 concurrent)
+        """
         
         if process and process.is_cancelled:
             return UploadResult.fail(file_path.name, "Process cancelled")
         
+        # Determine file size and select appropriate semaphore
+        try:
+            file_size = file_path.stat().st_size
+            is_small = file_size < self.SMALL_FILE_THRESHOLD
+            semaphore = self._small_file_semaphore if is_small else self._large_file_semaphore
+            size_category = "small" if is_small else "large"
+        except (OSError, AttributeError):
+            # If we can't get size, treat as small file
+            semaphore = self._small_file_semaphore
+            size_category = "small (unknown size)"
+            file_size = 0
+        
         async with semaphore:
-            file_size_mb = file_path.stat().st_size / (1024 * 1024)
-            logger.info(f"[{index}/{total_files}] Uploading: {file_path.name} ({file_size_mb:.2f} MB)")
+            file_size_mb = file_size / (1024 * 1024) if file_size > 0 else file_path.stat().st_size / (1024 * 1024)
+            logger.info(f"[{index}/{total_files}] Uploading ({size_category}): {file_path.name} ({file_size_mb:.2f} MB)")
             
             try:
                 # Initialize file tracking
                 if process:
                     await self._start_file_tracking(process, file_path)
                 
-                # Upload the file
-                result = await self._file_processor.process(
+                # Upload the file (this returns immediately, preview is handled separately)
+                result, duration, source_id = await self._file_processor.process(
                     file_path,
                     rel_path,
                     dest_path,
                     progress_callback=self._create_progress_tracker(process, file_path) if process else None
                 )
+                
+                # Launch preview generation in background for videos (non-blocking)
+                if result.success and duration is not None and source_id:
+                    try:
+                        # Launch preview task in background
+                        preview_task = asyncio.create_task(
+                            self._file_processor.generate_preview_background(
+                                file_path, source_id, duration
+                            )
+                        )
+                        self._preview_tasks.append(preview_task)
+                        logger.debug(f"Launched preview generation in background for {file_path.name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to launch preview for {file_path.name}: {e}")
                 
                 # Finalize file tracking
                 if process:
