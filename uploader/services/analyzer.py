@@ -9,25 +9,7 @@ import asyncio
 
 from ..protocols import IAnalyzer
 from .resume import blake3_file
-
-# Try to import from mediakit, fallback to local definitions
-try:
-    from mediakit import VIDEO_EXTENSIONS, IMAGE_EXTENSIONS, is_video, is_image
-except ImportError:
-    VIDEO_EXTENSIONS = {
-        '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v',
-        '.3gp', '.ogv', '.mts', '.m2ts', '.ts', '.mpeg', '.mpg',
-    }
-    IMAGE_EXTENSIONS = {
-        '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.tif',
-        '.heic', '.heif',
-    }
-    
-    def is_video(path) -> bool:
-        return Path(path).suffix.lower() in VIDEO_EXTENSIONS
-    
-    def is_image(path) -> bool:
-        return Path(path).suffix.lower() in IMAGE_EXTENSIONS
+from mediakit import is_video, is_image, analyze_video, analyze_photo
 
 
 class AnalyzerService(IAnalyzer):
@@ -58,12 +40,10 @@ class AnalyzerService(IAnalyzer):
     
     def analyze_video(self, path: Path) -> Dict[str, Any]:
         """Analyze video file."""
-        from mediakit import analyze_video
         return analyze_video(path)
     
     def analyze_photo(self, path: Path) -> Dict[str, Any]:
         """Analyze photo file."""
-        from mediakit import analyze_photo
         return analyze_photo(path)
     
     async def analyze_async(self, path: Path) -> Dict[str, Any]:

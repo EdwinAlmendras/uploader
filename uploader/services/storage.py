@@ -8,6 +8,9 @@ from typing import Optional, Dict, Any
 
 from ..models import UploadConfig
 from megapy import MegaClient
+import logging
+logger = logging.getLogger(__name__)
+
 
 class StorageService:
     """
@@ -98,6 +101,8 @@ class StorageService:
     
     async def _get_or_create_folder(self, path: str) -> Optional[str]:
         """Get or create folder, creating parents as needed. Uses cache."""
+
+        
         if not path:
             root = await self._client.get_root()
             return root.handle if root else None
@@ -107,15 +112,19 @@ class StorageService:
         
         # Check cache first
         if path in self._folder_cache:
+            logger.debug(f"Folder found in cache: /{path}")
             return self._folder_cache[path]
         
         # Check if exists in MEGA
+        logger.debug(f"Checking if folder exists in MEGA: /{path}")
         node = await self._client.get(f"/{path}")
         if node:
+            logger.debug(f"Folder already exists in MEGA: /{path} (handle: {node.handle})")
             self._folder_cache[path] = node.handle
             return node.handle
         
         # Create path recursively
+        logger.info(f"Creating folder structure: /{path}")
         parts = path.split("/")
         current_handle = None
         current_path = ""
@@ -125,12 +134,15 @@ class StorageService:
             
             # Check cache for intermediate paths
             if current_path in self._folder_cache:
+                logger.debug(f"Intermediate path found in cache: /{current_path}")
                 current_handle = self._folder_cache[current_path]
                 continue
             
+            logger.debug(f"Checking intermediate path: /{current_path}")
             node = await self._client.get(f"/{current_path}")
             
             if node:
+                logger.debug(f"Intermediate folder exists: /{current_path} (handle: {node.handle})")
                 current_handle = node.handle
             else:
                 # Create folder
@@ -138,12 +150,19 @@ class StorageService:
                     root = await self._client.get_root()
                     current_handle = root.handle
                 
+                logger.info(f"Creating folder: {part} in parent (handle: {current_handle})")
                 new_folder = await self._client.create_folder(part, current_handle)
-                current_handle = new_folder.handle
+                if new_folder:
+                    current_handle = new_folder.handle
+                    logger.info(f"Folder created successfully: {part} (handle: {current_handle})")
+                else:
+                    logger.error(f"Failed to create folder: {part}")
+                    return None
             
             # Cache intermediate path
             self._folder_cache[current_path] = current_handle
         
+        logger.info(f"Folder structure created/verified: /{path} (handle: {current_handle})")
         return current_handle
     
     async def upload_preview(

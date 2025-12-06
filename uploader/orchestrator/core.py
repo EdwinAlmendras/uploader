@@ -1,21 +1,22 @@
 """Core orchestrator - coordinates all upload workflows."""
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
-
+from uploader.utils.events import EventEmitter, FileProgress
 from ..models import UploadResult, UploadConfig, SocialInfo, TelegramInfo
 from ..protocols import IStorageClient
+from ..services.repository import HTTPAPIClient
 from ..services.analyzer import AnalyzerService
-from ..services.repository import MetadataRepository, HTTPAPIClient
+from ..services.repository import MetadataRepository
 from ..services.preview import PreviewService
 from ..services.storage import StorageService
-
-from .single_upload import SingleUploadHandler
-from .folder_upload import FolderUploadHandler
+from .folder.handler import FolderUploadHandler
 from .preview_handler import PreviewHandler
-from .models import FolderUploadResult
-
+from .single_upload import SingleUploadHandler
 if TYPE_CHECKING:
-    from .folder_upload import FolderUploadProcess
+    from .folder.process import FolderUploadProcess
+
+import logging
+logger = logging.getLogger(__name__)
 
 
 class UploadOrchestrator:
