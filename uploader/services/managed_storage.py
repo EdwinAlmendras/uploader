@@ -250,6 +250,25 @@ class ManagedStorageService:
             logger.debug(f"Error checking if file exists {path}: {e}")
             return False
     
+    async def exists_by_mega_id(self, mega_id: str) -> bool:
+        """
+        Check if file exists in MEGA by mega_id (attribute 'm') across ALL accounts.
+        
+        Uses AccountManager to search in all accounts.
+        
+        Args:
+            mega_id: Source ID (mega_id stored as 'm' attribute)
+            
+        Returns:
+            True if exists in any account, False otherwise
+        """
+        try:
+            result = await self._manager.find_by_mega_id(mega_id)
+            return result is not None
+        except Exception as e:
+            logger.debug(f"Error searching for mega_id {mega_id}: {e}")
+            return False
+    
     async def create_folder(self, path: str) -> Optional[str]:
         """
         Create folder path in MEGA (creates parents if needed).

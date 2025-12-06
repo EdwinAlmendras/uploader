@@ -252,7 +252,7 @@ class MetadataRepository(IMetadataRepository):
         except Exception:
             return {}
     
-    async def check_exists_batch(self, blake3_list: List[str]) -> Dict[str, str]:
+    async def check_exists_batch(self, blake3_list: List[str]) -> Dict[str, Dict[str, Any]]:
         """
         Batch check if documents exist by blake3_hash (deduplication).
         
@@ -260,7 +260,7 @@ class MetadataRepository(IMetadataRepository):
             blake3_list: List of BLAKE3 hashes to check
             
         Returns:
-            Dict mapping blake3_hash -> source_id for existing documents
+            Dict mapping blake3_hash -> {"source_id": str, "mega_handle": Optional[str]}
         """
         if not blake3_list:
             return {}

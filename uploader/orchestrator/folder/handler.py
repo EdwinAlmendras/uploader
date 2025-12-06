@@ -40,7 +40,7 @@ class FolderUploadHandler:
         self._file_collector = FileCollector()
         self._file_processor = FileProcessor(analyzer, repository, storage, preview_handler, config)
         self._existence_checker = FileExistenceChecker(storage)
-        self._blake3_deduplicator = Blake3Deduplicator(repository) if repository else None
+        self._blake3_deduplicator = Blake3Deduplicator(repository, storage) if repository else None
         self._preview_checker = PreviewChecker(storage, preview_handler, analyzer) if repository else None
         self._upload_coordinator = ParallelUploadCoordinator(self._file_processor, max_parallel=1)
         self._storage = storage

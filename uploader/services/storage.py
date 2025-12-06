@@ -87,6 +87,48 @@ class StorageService:
         except Exception:
             return False
     
+    async def exists_by_mega_id(self, mega_id: str) -> bool:
+        """
+        Check if file exists in MEGA by mega_id (attribute 'm').
+        
+        Searches through all files to find one with mega_id.
+        
+        Args:
+            mega_id: Source ID (mega_id stored as 'm' attribute)
+            
+        Returns:
+            True if exists, False otherwise
+        """
+        try:
+            # Ensure nodes are loaded
+            if self._client._node_service is None:
+                await self._client._load_nodes()
+            
+            # Search recursively through all files
+            def search_nodes(node):
+                """Recursively search for node with mega_id."""
+                if not node:
+                    return False
+                
+                # Check if this node has the mega_id
+                if node.attributes and node.attributes.mega_id == mega_id:
+                    return True
+                
+                # If it's a folder, search children
+                if node.is_folder:
+                    for child in node.children:
+                        if search_nodes(child):
+                            return True
+                
+                return False
+            
+            # Start from root
+            root = await self._client.get_root()
+            return search_nodes(root)
+        except Exception as e:
+            logger.debug(f"Error searching for mega_id {mega_id}: {e}")
+            return False
+    
     async def create_folder(self, path: str) -> Optional[str]:
         """
         Create folder path in MEGA (creates parents if needed).
@@ -101,7 +143,7 @@ class StorageService:
     
     async def _get_or_create_folder(self, path: str) -> Optional[str]:
         """Get or create folder, creating parents as needed. Uses cache."""
-
+        
         
         if not path:
             root = await self._client.get_root()

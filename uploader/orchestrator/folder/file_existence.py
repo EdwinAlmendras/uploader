@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional, Callable, Tuple, Set, Dict
 from uploader.services import StorageService
+from uploader.services.managed_storage import ManagedStorageService
 from uploader.services.repository import MetadataRepository
 from uploader.services.resume import blake3_file
 from uploader.orchestrator.preview_handler import PreviewHandler
@@ -81,8 +82,11 @@ class FileExistenceChecker:
 class Blake3Deduplicator:
     """Checks which files already exist in database by blake3_hash."""
 
-    def __init__(self, repository: MetadataRepository):
+    def __init__(self, repository: MetadataRepository, storage: StorageService):
         self._repository = repository
+        self._storage = storage
+        # Get AccountManager if storage is ManagedStorageService
+        self._manager = storage.manager if isinstance(storage, ManagedStorageService) else None
 
     async def check(self, file_paths: list[Path], progress_callback: Optional[Callable] = None) -> Tuple[Set[Path], Dict[Path, str]]:
         """
@@ -155,27 +159,71 @@ class Blake3Deduplicator:
         existing_hashes = await self._repository.check_exists_batch(list(unique_hashes))
         logger.debug("Blake3Deduplicator: Database returned %d existing hashes", len(existing_hashes))
 
-        # Find which files already exist (all files with existing hash should be skipped)
+        # Find which files already exist (verify they also exist in MEGA)
         existing_paths = set()
         path_to_source_id = {}  # Map path -> source_id for existing files
-        for blake3_hash, source_id in existing_hashes.items():
-            if blake3_hash in hash_to_paths:
-                # Add ALL files with this hash (they're all duplicates)
+        for blake3_hash, doc_info in existing_hashes.items():
+            if blake3_hash not in hash_to_paths:
+                logger.warning(
+                    "Blake3Deduplicator: Hash %s... found in database but not in our mapping!",
+                    blake3_hash[:16]
+                )
+                continue
+            
+            # Handle both old format (just source_id string) and new format (dict with source_id and mega_handle)
+            if isinstance(doc_info, dict):
+                source_id = doc_info.get("source_id")
+                mega_handle = doc_info.get("mega_handle")
+            else:
+                # Backward compatibility: old format was just source_id string
+                source_id = doc_info
+                mega_handle = None
+            
+            # Verify file exists in MEGA by searching for mega_id (attribute 'm')
+            # Use AccountManager if available (searches all accounts), otherwise use storage (single account)
+            file_exists_in_mega = True
+            if source_id:
+                # Use manager to search in all accounts if available
+                """ if self._manager:
+                    file_exists_in_mega = await self._manager.find_by_mega_id(source_id) is not None
+                else:
+                    # Fallback to storage (single account)
+                    file_exists_in_mega = await self._storage.exists_by_mega_id(source_id) """
+                
+                if not file_exists_in_mega:
+                    logger.info(
+                        "Blake3Deduplicator: File exists in database but NOT in MEGA (deleted?) - hash: %s..., source_id: %s - WILL RE-UPLOAD",
+                        blake3_hash[:16], source_id
+                    )
+                else:
+                    logger.debug(
+                        "Blake3Deduplicator: File exists in database AND MEGA - hash: %s..., source_id: %s",
+                        blake3_hash[:16], source_id
+                    )
+            else:
+                logger.debug(
+                    "Blake3Deduplicator: File in database has no source_id - hash: %s... - WILL RE-UPLOAD",
+                    blake3_hash[:16]
+                )
+            
+            # Only skip if file exists in both database AND MEGA
+            if file_exists_in_mega:
                 paths_with_hash = hash_to_paths[blake3_hash]
                 existing_paths.update(paths_with_hash)
                 # Map all paths with this hash to the same source_id
                 for file_path in paths_with_hash:
                     path_to_source_id[file_path] = source_id
                 logger.debug(
-                    "Blake3Deduplicator: ✓ Hash %s... exists in database (source_id: %s) - Skipping %d file(s):",
+                    "Blake3Deduplicator: ✓ Hash %s... exists in database AND MEGA (source_id: %s) - Skipping %d file(s):",
                     blake3_hash[:16], source_id, len(paths_with_hash)
                 )
                 for file_path in paths_with_hash:
                     logger.debug("Blake3Deduplicator:   - '%s' - WILL SKIP", file_path.name)
             else:
-                logger.warning(
-                    "Blake3Deduplicator: Hash %s... found in database but not in our mapping!",
-                    blake3_hash[:16]
+                # File exists in database but not in MEGA - don't skip, allow re-upload
+                logger.info(
+                    "Blake3Deduplicator: File will be re-uploaded (exists in DB but not in MEGA) - hash: %s..., source_id: %s",
+                    blake3_hash[:16], source_id
                 )
 
         # Log files that don't exist in database
