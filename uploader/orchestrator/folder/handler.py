@@ -204,7 +204,6 @@ class FolderUploadHandler:
             
             logger.info("Folder structure ready, starting parallel uploads...")
             
-            # 6. Upload files with parallel processing (all folders already exist)
             results = await self._upload_coordinator.upload(
                 pending_files, dest_path, total, progress_callback, process
             )
