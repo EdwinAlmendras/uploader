@@ -120,7 +120,7 @@ class FolderUploadHandler:
                 
                 # Filter out files that exist in database - only check remaining in MEGA
                 if existing_paths:
-                    files_to_check_mega = [f for f in all_files if f not in existing_paths]
+                    ### files_to_check_mega = [f for f in all_files if f not in existing_paths]
                     logger.debug(
                         "After blake3_hash check: %d files skipped (in database), %d files remaining to check in MEGA",
                         skipped_hash, len(files_to_check_mega)
