@@ -886,10 +886,33 @@ class FolderUploadHandler:
                     error=None
                 )
             
-            # 4. Create folder structure (only if there are pending files)
+            # 4. Create root folder first
             root_handle = await self._storage.create_folder(dest_path)
             
-            # 5. Upload files with parallel processing
+            # 5. Pre-create ALL folder structure BEFORE parallel upload starts
+            # This prevents race conditions when multiple uploads try to create the same folder
+            logger.info("Pre-creating folder structure...")
+            unique_subfolders = set()
+            for file_path, rel_path in pending_files:
+                if rel_path.parent != Path("."):
+                    # Build full path for subfolder
+                    subfolder_path = f"{dest_path}/{rel_path.parent}"
+                    unique_subfolders.add(subfolder_path)
+            
+            # Create all subfolders sequentially to avoid race conditions
+            # This ensures all folders exist before parallel uploads start
+            if unique_subfolders:
+                logger.info(f"Creating {len(unique_subfolders)} subfolder(s) before upload...")
+                for subfolder_path in sorted(unique_subfolders):  # Sort for consistent order
+                    try:
+                        await self._storage.create_folder(subfolder_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to create subfolder {subfolder_path}: {e}")
+                        # Continue with other folders - upload will handle missing folders
+            
+            logger.info("Folder structure ready, starting parallel uploads...")
+            
+            # 6. Upload files with parallel processing (all folders already exist)
             results = await self._upload_coordinator.upload(
                 pending_files, dest_path, total, progress_callback, process
             )
