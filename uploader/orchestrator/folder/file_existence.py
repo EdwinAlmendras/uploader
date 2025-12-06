@@ -1,8 +1,11 @@
 from pathlib import Path
-from typing import Optional, Callable, Tuple, Set
+from typing import Optional, Callable, Tuple, Set, Dict
 from uploader.services import StorageService
 from uploader.services.repository import MetadataRepository
 from uploader.services.resume import blake3_file
+from uploader.orchestrator.preview_handler import PreviewHandler
+from uploader.services.analyzer import AnalyzerService
+from mediakit import is_video
 import asyncio
 import logging
 
@@ -81,7 +84,7 @@ class Blake3Deduplicator:
     def __init__(self, repository: MetadataRepository):
         self._repository = repository
 
-    async def check(self, file_paths: list[Path], progress_callback: Optional[Callable] = None) -> Set[Path]:
+    async def check(self, file_paths: list[Path], progress_callback: Optional[Callable] = None) -> Tuple[Set[Path], Dict[Path, str]]:
         """
         Check which files already exist in database by blake3_hash.
         
@@ -90,11 +93,11 @@ class Blake3Deduplicator:
             progress_callback: Optional progress callback
             
         Returns:
-            Set of file paths that already exist in database (should be skipped)
+            Tuple of (set of file paths that exist, dict mapping path -> source_id)
         """
         if not file_paths:
             logger.debug("Blake3Deduplicator: No files to check")
-            return set()
+            return set(), {}
 
         total = len(file_paths)
         logger.debug("Blake3Deduplicator: Starting deduplication for %d files", total)
@@ -128,7 +131,7 @@ class Blake3Deduplicator:
 
         if not blake3_list:
             logger.warning("Blake3Deduplicator: No valid blake3 hashes calculated")
-            return set()
+            return set(), {}
 
         # Get unique hashes (files with same content will have same hash)
         unique_hashes = set(blake3_list)
@@ -154,11 +157,15 @@ class Blake3Deduplicator:
 
         # Find which files already exist (all files with existing hash should be skipped)
         existing_paths = set()
+        path_to_source_id = {}  # Map path -> source_id for existing files
         for blake3_hash, source_id in existing_hashes.items():
             if blake3_hash in hash_to_paths:
                 # Add ALL files with this hash (they're all duplicates)
                 paths_with_hash = hash_to_paths[blake3_hash]
                 existing_paths.update(paths_with_hash)
+                # Map all paths with this hash to the same source_id
+                for file_path in paths_with_hash:
+                    path_to_source_id[file_path] = source_id
                 logger.debug(
                     "Blake3Deduplicator: ✓ Hash %s... exists in database (source_id: %s) - Skipping %d file(s):",
                     blake3_hash[:16], source_id, len(paths_with_hash)
@@ -190,5 +197,119 @@ class Blake3Deduplicator:
         else:
             logger.info("Blake3Deduplicator: All %d files are new (not in database)", total)
 
-        return existing_paths
+        return existing_paths, path_to_source_id
+
+
+class PreviewChecker:
+    """Checks and regenerates missing previews for existing files."""
+
+    def __init__(
+        self,
+        storage: StorageService,
+        preview_handler: PreviewHandler,
+        analyzer: AnalyzerService
+    ):
+        self._storage = storage
+        self._preview_handler = preview_handler
+        self._analyzer = analyzer
+
+    async def check_and_regenerate(
+        self,
+        existing_files: Dict[Path, str],
+        progress_callback: Optional[Callable] = None
+    ) -> int:
+        """
+        Check if previews exist for existing files and regenerate if missing.
+        
+        Args:
+            existing_files: Dict mapping file_path -> source_id for files that exist in database
+            progress_callback: Optional progress callback
+            
+        Returns:
+            Number of previews regenerated
+        """
+        if not existing_files:
+            return 0
+
+        # Filter only video files
+        video_files = {
+            path: source_id 
+            for path, source_id in existing_files.items() 
+            if is_video(path)
+        }
+
+        if not video_files:
+            logger.debug("PreviewChecker: No video files to check for previews")
+            return 0
+
+        total = len(video_files)
+        logger.info("PreviewChecker: Checking previews for %d existing video files", total)
+        if progress_callback:
+            progress_callback("Checking previews...", 0, total)
+
+        regenerated = 0
+        for idx, (file_path, source_id) in enumerate(video_files.items()):
+            preview_path = f"/.previews/{source_id}.jpg"
+            
+            logger.debug(
+                "PreviewChecker: [%d/%d] Checking preview for '%s' (source_id: %s) at '%s'",
+                idx + 1, total, file_path.name, source_id, preview_path
+            )
+
+            # Check if preview exists in MEGA
+            preview_exists = await self._storage.exists(preview_path)
+            
+            if preview_exists:
+                logger.debug(
+                    "PreviewChecker: ✓ Preview exists for '%s' (source_id: %s) - SKIP",
+                    file_path.name, source_id
+                )
+            else:
+                logger.info(
+                    "PreviewChecker: ✗ Preview missing for '%s' (source_id: %s) - REGENERATING",
+                    file_path.name, source_id
+                )
+                
+                # Get video duration by analyzing the file
+                try:
+                    tech_data = await self._analyzer.analyze_video_async(file_path)
+                    duration = tech_data.get('duration', 0)
+                    
+                    if duration > 0:
+                        # Regenerate and upload preview
+                        preview_handle = await self._preview_handler.upload_preview(
+                            file_path, source_id, duration
+                        )
+                        if preview_handle:
+                            logger.info(
+                                "PreviewChecker: ✓ Preview regenerated and uploaded for '%s' (source_id: %s, handle: %s)",
+                                file_path.name, source_id, preview_handle
+                            )
+                            regenerated += 1
+                        else:
+                            logger.warning(
+                                "PreviewChecker: Failed to upload preview for '%s' (source_id: %s)",
+                                file_path.name, source_id
+                            )
+                    else:
+                        logger.warning(
+                            "PreviewChecker: Invalid duration (%.2f) for '%s' (source_id: %s) - skipping preview",
+                            duration, file_path.name, source_id
+                        )
+                except Exception as e:
+                    logger.error(
+                        "PreviewChecker: Error regenerating preview for '%s' (source_id: %s): %s",
+                        file_path.name, source_id, e,
+                        exc_info=True
+                    )
+
+            if progress_callback and idx % 5 == 0:
+                progress_callback(f"Checking previews: {file_path.name}", idx + 1, total)
+
+        if regenerated > 0:
+            logger.info("PreviewChecker: Regenerated %d missing previews", regenerated)
+        else:
+            logger.debug("PreviewChecker: All previews exist, nothing to regenerate")
+
+        return regenerated
 

@@ -6,7 +6,7 @@ from uploader.orchestrator.file_collector import FileCollector
 from uploader.orchestrator.models import FolderUploadResult
 from uploader.models import UploadConfig
 from .file_processor import FileProcessor
-from .file_existence import FileExistenceChecker, Blake3Deduplicator
+from .file_existence import FileExistenceChecker, Blake3Deduplicator, PreviewChecker
 from .parallel_upload import ParallelUploadCoordinator
 from .process import FolderUploadProcess
 from uploader.services.analyzer import AnalyzerService
@@ -41,6 +41,7 @@ class FolderUploadHandler:
         self._file_processor = FileProcessor(analyzer, repository, storage, preview_handler, config)
         self._existence_checker = FileExistenceChecker(storage)
         self._blake3_deduplicator = Blake3Deduplicator(repository) if repository else None
+        self._preview_checker = PreviewChecker(storage, preview_handler, analyzer) if repository else None
         self._upload_coordinator = ParallelUploadCoordinator(self._file_processor, max_parallel=1)
         self._storage = storage
     
@@ -110,10 +111,12 @@ class FolderUploadHandler:
             # Step 1: Check in database by blake3_hash (MORE SECURE - detects duplicates regardless of location/name)
             skipped_hash = 0
             files_to_check_mega = all_files
+            existing_files_with_source_id = {}  # path -> source_id for existing files
             if self._blake3_deduplicator:
                 logger.info("Checking files in database by blake3_hash (deduplication)")
-                existing_paths = await self._blake3_deduplicator.check(all_files, progress_callback)
+                existing_paths, path_to_source_id = await self._blake3_deduplicator.check(all_files, progress_callback)
                 skipped_hash = len(existing_paths)
+                existing_files_with_source_id = path_to_source_id
                 
                 # Filter out files that exist in database - only check remaining in MEGA
                 if existing_paths:
@@ -140,6 +143,16 @@ class FolderUploadHandler:
             
             total_skipped = skipped_mega + skipped_hash
             logger.info(f"Existence check summary: {total} total files, {skipped_hash} skipped by blake3_hash, {skipped_mega} skipped by MEGA path, {total_skipped} total skipped, {len(pending_files)} files to upload")
+            
+            # Step 3: Check and regenerate missing previews for existing files
+            previews_regenerated = 0
+            if existing_files_with_source_id and self._preview_checker:
+                logger.info("Checking and regenerating missing previews for existing files")
+                previews_regenerated = await self._preview_checker.check_and_regenerate(
+                    existing_files_with_source_id, progress_callback
+                )
+                if previews_regenerated > 0:
+                    logger.info(f"Regenerated {previews_regenerated} missing previews")
             
             if process:
                 async with process._stats_lock:
