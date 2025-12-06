@@ -78,11 +78,9 @@ class MetadataRepository(IMetadataRepository):
             "ctime": data["ctime"].isoformat() if data.get("ctime") else None,
         }
         
-        # Send blake3_hash if available, otherwise sha256sum (for backward compatibility)
+        # Only send blake3_hash (sha256sum is no longer generated)
         if "blake3_hash" in data:
             payload["blake3_hash"] = data["blake3_hash"]
-        if "sha256sum" in data:
-            payload["sha256sum"] = data["sha256sum"]
         
         await self._api.post("/documents", json=payload)
     
@@ -254,25 +252,6 @@ class MetadataRepository(IMetadataRepository):
         except Exception:
             return {}
     
-    async def lookup_by_sha256(self, sha256_list: List[str]) -> Dict[str, str]:
-        """
-        Lookup existing documents by SHA256 hashes (legacy method).
-        
-        Args:
-            sha256_list: List of SHA256 hashes to lookup
-            
-        Returns:
-            Dict mapping sha256 -> source_id for existing documents
-        """
-        if not sha256_list:
-            return {}
-        
-        try:
-            response = await self._api.post("/documents/lookup", json={"sha256_list": sha256_list})
-            return response.json().get("found", {})
-        except Exception:
-            return {}
-    
     # =========================================================================
     # Batch Operations
     # =========================================================================
@@ -299,11 +278,9 @@ class MetadataRepository(IMetadataRepository):
             "ctime": data["ctime"].isoformat() if data.get("ctime") else None,
         }
         
-        # Include blake3_hash if available, otherwise sha256sum (for backward compatibility)
+        # Only include blake3_hash (sha256sum is no longer generated)
         if "blake3_hash" in data:
             payload["blake3_hash"] = data["blake3_hash"]
-        if "sha256sum" in data:
-            payload["sha256sum"] = data["sha256sum"]
         
         return payload
     
