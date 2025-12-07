@@ -6,6 +6,7 @@ Supports batch operations for efficient bulk uploads.
 """
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+import asyncio
 import httpx
 
 from ..protocols import IMetadataRepository, IAPIClient
@@ -352,7 +353,7 @@ class HTTPAPIClient:
     Implements IAPIClient protocol.
     """
     
-    def __init__(self, base_url: str, timeout: int = 30):
+    def __init__(self, base_url: str, timeout: int = 60):
         self._base_url = base_url
         self._timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
@@ -369,28 +370,74 @@ class HTTPAPIClient:
         if not self._client:
             raise RuntimeError("HTTPAPIClient not initialized. Use 'async with' context.")
         
-        response = await self._client.post(endpoint, json=json)
+        max_retries = 3
+        last_exception = None
         
-        if response.status_code >= 400:
+        for attempt in range(max_retries):
             try:
-                error_detail = response.json()
-            except:
-                error_detail = response.text
-            raise RuntimeError(f"API error {response.status_code} on POST {endpoint}: {error_detail}")
+                response = await self._client.post(endpoint, json=json)
+                
+                # Retry on 5xx errors (server errors), but not on 4xx (client errors)
+                if response.status_code >= 500:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff: 0.5s, 1s, 1.5s
+                        continue
+                
+                if response.status_code >= 400:
+                    try:
+                        error_detail = response.json()
+                    except:
+                        error_detail = response.text
+                    raise RuntimeError(f"API error {response.status_code} on POST {endpoint}: {error_detail}")
+                
+                return response
+                
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff: 0.5s, 1s, 1.5s
+                    continue
+                raise
         
-        return response
+        # If we exhausted all retries, raise the last exception
+        if last_exception:
+            raise last_exception
+        raise RuntimeError(f"Failed to POST {endpoint} after {max_retries} attempts")
     
     async def get(self, endpoint: str) -> Any:
         if not self._client:
             raise RuntimeError("HTTPAPIClient not initialized. Use 'async with' context.")
         
-        response = await self._client.get(endpoint)
+        max_retries = 3
+        last_exception = None
         
-        if response.status_code >= 400:
+        for attempt in range(max_retries):
             try:
-                error_detail = response.json()
-            except:
-                error_detail = response.text
-            raise RuntimeError(f"API error {response.status_code} on GET {endpoint}: {error_detail}")
+                response = await self._client.get(endpoint)
+                
+                # Retry on 5xx errors (server errors), but not on 4xx (client errors)
+                if response.status_code >= 500:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff: 0.5s, 1s, 1.5s
+                        continue
+                
+                if response.status_code >= 400:
+                    try:
+                        error_detail = response.json()
+                    except:
+                        error_detail = response.text
+                    raise RuntimeError(f"API error {response.status_code} on GET {endpoint}: {error_detail}")
+                
+                return response
+                
+            except (httpx.RequestError, httpx.TimeoutException) as e:
+                last_exception = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff: 0.5s, 1s, 1.5s
+                    continue
+                raise
         
-        return response
+        # If we exhausted all retries, raise the last exception
+        if last_exception:
+            raise last_exception
+        raise RuntimeError(f"Failed to GET {endpoint} after {max_retries} attempts")
