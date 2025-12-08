@@ -2,11 +2,39 @@ from pathlib import Path
 from typing import Optional, Callable, List, Tuple
 import asyncio
 import logging
+import os
 from uploader.orchestrator.folder.file_processor import FileProcessor
 from uploader.orchestrator.folder.process import FolderUploadProcess
 from uploader.orchestrator.models import UploadResult
 from uploader.utils.events import FileProgress
+
 logger = logging.getLogger(__name__)
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
+
+def _get_memory_mb() -> float:
+    """Get current memory usage in MB."""
+    if HAS_PSUTIL:
+        try:
+            process = psutil.Process(os.getpid())
+            return process.memory_info().rss / (1024 * 1024)
+        except Exception:
+            pass
+    return 0.0
+
+
+def _log_memory(operation: str, file_name: str = ""):
+    """Log memory usage for debugging."""
+    mem_mb = _get_memory_mb()
+    if file_name:
+        logger.info(f"[MEMORY] {operation} - File: {file_name} - RSS: {mem_mb:.2f} MB")
+    else:
+        logger.info(f"[MEMORY] {operation} - RSS: {mem_mb:.2f} MB")
 
 class ParallelUploadCoordinator:
     """
@@ -62,6 +90,7 @@ class ParallelUploadCoordinator:
             f"({small_count} small < 5MB: max 5 parallel, "
             f"{large_count} large >= 5MB: 1 at a time)"
         )
+        _log_memory("ParallelUploadCoordinator.upload started", f"{len(pending_files)} files")
         
         # Clear preview tasks from previous runs
         self._preview_tasks.clear()
@@ -94,9 +123,11 @@ class ParallelUploadCoordinator:
                 await self._cancel_remaining_tasks(tasks)
                 break
             
+            _log_memory(f"Waiting for file upload to complete", f"({completed + 1}/{len(pending_files)})")
             result = await task
             results.append(result)
             completed += 1
+            _log_memory(f"File upload completed", f"{result.filename} ({completed}/{len(pending_files)})")
             
             if progress_callback:
                 status = "✓" if result.success else "✗"
@@ -108,9 +139,11 @@ class ParallelUploadCoordinator:
         uploaded = sum(1 for r in results if r.success)
         failed = sum(1 for r in results if not r.success)
         logger.info(f"File uploads complete: {uploaded} successful, {failed} failed")
+        _log_memory("All file uploads completed", f"{uploaded} successful, {failed} failed")
         
         # Wait for all previews to complete
         if self._preview_tasks:
+            _log_memory("Waiting for preview tasks", f"{len(self._preview_tasks)} previews")
             logger.info(f"Waiting for {len(self._preview_tasks)} preview(s) to complete...")
             preview_results = await asyncio.gather(*self._preview_tasks, return_exceptions=True)
             
@@ -121,8 +154,10 @@ class ParallelUploadCoordinator:
                 logger.warning(f"Preview generation: {successful_previews} successful, {failed_previews} failed")
             else:
                 logger.info(f"All {successful_previews} preview(s) generated successfully")
+            _log_memory("All preview tasks completed", f"{successful_previews} successful")
         
         logger.info(f"Upload complete: {uploaded} files, {len(self._preview_tasks)} previews")
+        _log_memory("ParallelUploadCoordinator.upload completed", f"{uploaded} files")
         
         return results
 
@@ -162,6 +197,7 @@ class ParallelUploadCoordinator:
         async with semaphore:
             file_size_mb = file_size / (1024 * 1024) if file_size > 0 else file_path.stat().st_size / (1024 * 1024)
             logger.info(f"[{index}/{total_files}] Uploading ({size_category}): {file_path.name} ({file_size_mb:.2f} MB)")
+            _log_memory(f"Acquired semaphore for upload", f"{file_path.name} ({size_category})")
             
             try:
                 # Initialize file tracking
@@ -169,12 +205,14 @@ class ParallelUploadCoordinator:
                     await self._start_file_tracking(process, file_path)
                 
                 # Upload the file (this returns immediately, preview is handled separately)
+                _log_memory("Before FileProcessor.process call", file_path.name)
                 result, duration, source_id = await self._file_processor.process(
                     file_path,
                     rel_path,
                     dest_path,
                     progress_callback=self._create_progress_tracker(process, file_path) if process else None
                 )
+                _log_memory("After FileProcessor.process call", file_path.name)
                 
                 # Launch preview generation in background for videos (non-blocking)
                 if result.success and duration is not None and source_id:

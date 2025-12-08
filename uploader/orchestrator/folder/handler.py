@@ -14,7 +14,34 @@ from uploader.services.repository import MetadataRepository
 from uploader.services.storage import StorageService
 
 import logging
+import os
 logger = logging.getLogger(__name__)
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
+
+def _get_memory_mb() -> float:
+    """Get current memory usage in MB."""
+    if HAS_PSUTIL:
+        try:
+            process = psutil.Process(os.getpid())
+            return process.memory_info().rss / (1024 * 1024)
+        except Exception:
+            pass
+    return 0.0
+
+
+def _log_memory(operation: str, file_name: str = ""):
+    """Log memory usage for debugging."""
+    mem_mb = _get_memory_mb()
+    if file_name:
+        logger.info(f"[MEMORY] {operation} - File: {file_name} - RSS: {mem_mb:.2f} MB")
+    else:
+        logger.info(f"[MEMORY] {operation} - RSS: {mem_mb:.2f} MB")
 
 class FolderUploadHandler:
     """Handles folder uploads with intelligent parallel processing (max 2 concurrent)."""
@@ -61,6 +88,7 @@ class FolderUploadHandler:
     ) -> FolderUploadResult:
         """Internal method that performs the actual upload."""
         folder_path = Path(folder_path)
+        _log_memory("Folder upload started", folder_path.name)
         
         if not folder_path.is_dir():
             return FolderUploadResult(
@@ -89,6 +117,7 @@ class FolderUploadHandler:
             
             all_files = self._file_collector.collect_files(folder_path)
             total = len(all_files)
+            _log_memory(f"Files collected: {total} files found")
             
             if process:
                 async with process._stats_lock:
@@ -114,9 +143,11 @@ class FolderUploadHandler:
             existing_files_with_source_id = {}  # path -> source_id for existing files
             if self._blake3_deduplicator:
                 logger.info("Checking files in database by blake3_hash (deduplication)")
+                _log_memory("Before blake3_hash calculation", f"{total} files")
                 existing_paths, path_to_source_id = await self._blake3_deduplicator.check(all_files, progress_callback)
                 skipped_hash = len(existing_paths)
                 existing_files_with_source_id = path_to_source_id
+                _log_memory("After blake3_hash calculation", f"{skipped_hash} files skipped")
                 
                 # Filter out files that exist in database - only check remaining in MEGA
                 if existing_paths:
@@ -134,9 +165,11 @@ class FolderUploadHandler:
             skipped_mega = 0
             if files_to_check_mega:
                 logger.info("Checking remaining files in MEGA by path")
+                _log_memory("Before MEGA existence check", f"{len(files_to_check_mega)} files")
                 pending_files, skipped_mega = await self._existence_checker.check(
                     files_to_check_mega, folder_path, dest_path, len(files_to_check_mega), progress_callback
                 )
+                _log_memory("After MEGA existence check", f"{len(pending_files)} files pending")
             else:
                 pending_files = []
                 logger.debug("No files to check in MEGA (all were skipped by blake3_hash check)")
@@ -203,10 +236,13 @@ class FolderUploadHandler:
                         # Continue with other folders - upload will handle missing folders
             
             logger.info("Folder structure ready, starting parallel uploads...")
+            _log_memory("Before starting parallel uploads", f"{len(pending_files)} files")
             
             results = await self._upload_coordinator.upload(
                 pending_files, dest_path, total, progress_callback, process
             )
+            
+            _log_memory("After parallel uploads completed", f"{len(results)} results")
             
             uploaded = sum(1 for r in results if r.success)
             failed = sum(1 for r in results if not r.success)

@@ -9,8 +9,35 @@ from uploader.services.analyzer import AnalyzerService
 from mediakit import is_video
 import asyncio
 import logging
+import os
 
 logger = logging.getLogger(__name__)
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+
+
+def _get_memory_mb() -> float:
+    """Get current memory usage in MB."""
+    if HAS_PSUTIL:
+        try:
+            process = psutil.Process(os.getpid())
+            return process.memory_info().rss / (1024 * 1024)
+        except Exception:
+            pass
+    return 0.0
+
+
+def _log_memory(operation: str, file_name: str = ""):
+    """Log memory usage for debugging."""
+    mem_mb = _get_memory_mb()
+    if file_name:
+        logger.info(f"[MEMORY] {operation} - File: {file_name} - RSS: {mem_mb:.2f} MB")
+    else:
+        logger.info(f"[MEMORY] {operation} - RSS: {mem_mb:.2f} MB")
 
 class FileExistenceChecker:
     """Checks which files already exist in MEGA by path."""
@@ -110,8 +137,10 @@ class Blake3Deduplicator:
 
         # Calculate blake3_hash for all files
         logger.debug("Blake3Deduplicator: Calculating blake3_hash for %d files...", total)
+        _log_memory("Before blake3_hash calculation (parallel)", f"{total} files")
         hash_tasks = [blake3_file(file_path) for file_path in file_paths]
         blake3_hashes = await asyncio.gather(*hash_tasks)
+        _log_memory("After blake3_hash calculation (parallel)", f"{len(blake3_hashes)} hashes computed")
 
         # Build mapping: blake3_hash -> list of file_paths (multiple files can have same hash)
         hash_to_paths = {}  # hash -> list of paths
