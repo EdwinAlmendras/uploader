@@ -146,6 +146,7 @@ class ParallelUploadCoordinator:
             _log_memory("Waiting for preview tasks", f"{len(self._preview_tasks)} previews")
             logger.info(f"Waiting for {len(self._preview_tasks)} preview(s) to complete...")
             preview_results = await asyncio.gather(*self._preview_tasks, return_exceptions=True)
+            _log_memory("After gathering preview tasks", f"{len(self._preview_tasks)} previews")
             
             successful_previews = sum(1 for r in preview_results if r and not isinstance(r, Exception))
             failed_previews = sum(1 for r in preview_results if isinstance(r, Exception) or r is None)
@@ -155,6 +156,10 @@ class ParallelUploadCoordinator:
             else:
                 logger.info(f"All {successful_previews} preview(s) generated successfully")
             _log_memory("All preview tasks completed", f"{successful_previews} successful")
+            
+            # Clear preview tasks to free memory
+            self._preview_tasks.clear()
+            _log_memory("Preview tasks list cleared", "")
         
         logger.info(f"Upload complete: {uploaded} files, {len(self._preview_tasks)} previews")
         _log_memory("ParallelUploadCoordinator.upload completed", f"{uploaded} files")
@@ -217,6 +222,7 @@ class ParallelUploadCoordinator:
                 # Launch preview generation in background for videos (non-blocking)
                 if result.success and duration is not None and source_id:
                     try:
+                        _log_memory("Before launching preview task", file_path.name)
                         # Launch preview task in background
                         preview_task = asyncio.create_task(
                             self._file_processor.generate_preview_background(
@@ -224,6 +230,7 @@ class ParallelUploadCoordinator:
                             )
                         )
                         self._preview_tasks.append(preview_task)
+                        _log_memory("After launching preview task", f"{file_path.name} (total preview tasks: {len(self._preview_tasks)})")
                         logger.debug(f"Launched preview generation in background for {file_path.name}")
                     except Exception as e:
                         logger.warning(f"Failed to launch preview for {file_path.name}: {e}")
@@ -234,6 +241,12 @@ class ParallelUploadCoordinator:
                 
                 status = "✓ Success" if result.success else "✗ Failed"
                 logger.info(f"[{index}/{total_files}] {status}: {file_path.name}")
+                _log_memory(f"File upload finished ({status})", file_path.name)
+                
+                # Force garbage collection after each file to help free memory
+                import gc
+                gc.collect()
+                _log_memory("After garbage collection", file_path.name)
                 
                 return result
                 

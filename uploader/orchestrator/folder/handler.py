@@ -244,6 +244,11 @@ class FolderUploadHandler:
             
             _log_memory("After parallel uploads completed", f"{len(results)} results")
             
+            # Force garbage collection after all uploads
+            import gc
+            gc.collect()
+            _log_memory("After garbage collection (all uploads)", "")
+            
             uploaded = sum(1 for r in results if r.success)
             failed = sum(1 for r in results if not r.success)
             

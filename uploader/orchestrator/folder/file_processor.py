@@ -151,15 +151,18 @@ class FileProcessor:
         if not self._config.generate_preview:
             return None
         
+        _log_memory("Preview generation started", file_path.name)
         try:
             preview_handle = await self._preview_handler.upload_preview(
                 file_path, source_id, duration
             )
+            _log_memory("Preview generation completed", file_path.name)
             if preview_handle:
                 logger.info("Preview uploaded in background (handle: %s) for %s", preview_handle, file_path.name)
             return preview_handle
         except Exception as e:
             logger.error("Error generating preview for %s: %s", file_path.name, e, exc_info=True)
+            _log_memory("Preview generation failed", file_path.name)
             return None
 
 
