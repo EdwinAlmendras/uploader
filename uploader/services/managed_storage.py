@@ -140,6 +140,9 @@ class ManagedStorageService:
         """
         Check if there's enough space available for a file of the given size.
         
+        This method checks if a SINGLE account has enough space for the file.
+        Use check_total_available_space() for folders that can be split across accounts.
+        
         If no account has enough space, it will attempt to create a new account
         (if auto_create is enabled).
         
@@ -165,6 +168,68 @@ class ManagedStorageService:
             return False
         except Exception as e:
             logger.error(f"Error checking space availability: {e}")
+            return False
+    
+    async def check_total_available_space(self, total_size: int) -> bool:
+        """
+        Check if there's enough TOTAL space available across ALL accounts for a folder.
+        
+        This method sums the free space from all active accounts, which is appropriate
+        for folders that can be split across multiple accounts.
+        
+        Args:
+            total_size: Total size in bytes (e.g., sum of all files in a folder)
+            
+        Returns:
+            True if total available space >= total_size, False otherwise
+        """
+        if not self._started:
+            await self.start()
+        
+        try:
+            manager = self._manager
+            active_accounts = manager.active_accounts
+            
+            if not active_accounts:
+                # No accounts available, try to create one
+                if manager.auto_create:
+                    logger.info("No accounts found. Attempting to create a new account...")
+                    new_account = await manager.create_new_session()
+                    if new_account:
+                        active_accounts = manager.active_accounts
+            
+            if not active_accounts:
+                logger.warning("No accounts available")
+                return False
+            
+            # Sum free space from all active accounts
+            total_free_space = sum(account.space_free for account in active_accounts)
+            
+            logger.debug(
+                f"Total free space: {total_free_space / (1024**3):.2f} GB, "
+                f"Required: {total_size / (1024**3):.2f} GB"
+            )
+            
+            if total_free_space >= total_size:
+                return True
+            
+            # Not enough space, try to create a new account if auto_create is enabled
+            if manager.auto_create:
+                logger.info(
+                    f"Insufficient total space ({total_free_space / (1024**3):.2f} GB). "
+                    f"Attempting to create a new account..."
+                )
+                new_account = await manager.create_new_session(prompt_new=True)
+                if new_account:
+                    # Recalculate with new account
+                    active_accounts = manager.active_accounts
+                    total_free_space = sum(account.space_free for account in active_accounts)
+                    return total_free_space >= total_size
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking total space availability: {e}")
             return False
     
     
