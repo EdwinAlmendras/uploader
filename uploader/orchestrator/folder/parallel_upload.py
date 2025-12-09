@@ -24,7 +24,7 @@ class ParallelUploadCoordinator:
         self._max_parallel = max_parallel
         self._preview_tasks: List[asyncio.Task] = []
         import os
-        self._small_file_semaphore = asyncio.Semaphore(os.getenv("UPLOADER_MAX_PARALLEL", 3))
+        self._small_file_semaphore = asyncio.Semaphore(int(os.getenv("UPLOADER_MAX_PARALLEL", 3)))
         self._large_file_semaphore = asyncio.Semaphore(1)
     
     async def upload(
