@@ -180,10 +180,17 @@ class ParallelUploadCoordinator:
                 # Launch preview generation in background for videos (non-blocking)
                 if result.success and duration is not None and source_id:
                     try:
+                        # Determine destination path for preview (same as video)
+                        if rel_path.parent != Path("."):
+                            parent_str = rel_path.parent.as_posix()
+                            preview_dest = f"{dest_path}/{parent_str}"
+                        else:
+                            preview_dest = dest_path
+                        
                         # Launch preview task in background
                         preview_task = asyncio.create_task(
                             self._file_processor.generate_preview_background(
-                                file_path, source_id, duration
+                                file_path, source_id, duration, preview_dest
                             )
                         )
                         self._preview_tasks.append(preview_task)

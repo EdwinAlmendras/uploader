@@ -62,8 +62,10 @@ class SingleUploadHandler:
             # 4. Generate and upload preview
             preview_handle = None
             if self._config.generate_preview:
+                # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
+                preview_filename = path.stem + ".jpg"
                 preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration
+                    path, source_id, duration, dest_path=dest, filename=preview_filename
                 )
             
             return UploadResult.ok(
@@ -112,8 +114,10 @@ class SingleUploadHandler:
             # 5. Generate and upload preview
             preview_handle = None
             if self._config.generate_preview:
+                # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
+                preview_filename = path.stem + ".jpg"
                 preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration
+                    path, source_id, duration, dest_path=dest, filename=preview_filename
                 )
             
             return UploadResult.ok(
@@ -229,9 +233,11 @@ class SingleUploadHandler:
             # Wait for preview to complete before returning to ensure file is not deleted
             preview_handle = None
             if is_vid and self._config.generate_preview:
+                # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
+                preview_filename = path.stem + ".jpg"
                 # Generate preview synchronously to ensure file exists
                 preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration
+                    path, source_id, duration, dest_path=dest, filename=preview_filename
                 )
             
             return UploadResult.ok(
