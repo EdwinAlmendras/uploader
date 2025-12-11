@@ -50,20 +50,21 @@ class ManagedStorageService:
         """
         self._config = config or UploadConfig()
         if not sessions_dir:
-            sessions_dir = Path.home() / ".config" / "mega" / "sessions"
-        if not sessions_dir.exists():
-            sessions_dir.mkdir(parents=True, exist_ok=True)
+            import os
+            sessions_dir = os.getenv("MEGA_SESSIONS_DIR")
+            if not sessions_dir:
+                sessions_dir = Path.home() / ".config" / "mega" / "sessions"
+                if not sessions_dir.exists():
+                    sessions_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            if not sessions_dir.exists():
+                sessions_dir.mkdir(parents=True, exist_ok=True)
             
-        self._manager = AccountManager(
-            sessions_dir=sessions_dir,
-            buffer_mb=buffer_mb,
-            auto_create=auto_create
-        )
-        self._folder_cache: Dict[str, Dict[str, str]] = {}  # account_name -> {path -> handle} cache
-        self._last_account: Optional[str] = None
-        self._started = False
-        self._locked_account: Optional[str] = None  # Account locked for folder upload
-        self._locked_client = None  # Client for locked account
+            self._manager = AccountManager(
+                sessions_dir=sessions_dir,
+                buffer_mb=buffer_mb,
+                auto_create=auto_create
+            )
     
     @property
     def manager(self) -> AccountManager:
