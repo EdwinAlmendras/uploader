@@ -208,8 +208,11 @@ class FolderUploadHandler:
                 previews_regenerated = 0
                 if existing_files_with_source_id and self._preview_checker:
                     logger.info("Checking and regenerating missing previews for existing files")
+                    
+                    
+                    
                     previews_regenerated = await self._preview_checker.check_and_regenerate(
-                        existing_files_with_source_id, progress_callback
+                        existing_files_with_source_id, dest_path, relative_to=folder_path, progress_callback=progress_callback
                     )
                     if previews_regenerated > 0:
                         logger.info(f"Regenerated {previews_regenerated} missing previews")

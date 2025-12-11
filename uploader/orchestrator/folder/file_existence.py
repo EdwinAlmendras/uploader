@@ -264,7 +264,9 @@ class PreviewChecker:
     async def check_and_regenerate(
         self,
         existing_files: Dict[Path, str],
-        progress_callback: Optional[Callable] = None
+        dest_path: str,
+        relative_to: Path = None,
+        progress_callback: Optional[Callable] = None,
     ) -> int:
         """
         Check if previews exist for existing files and regenerate if missing.
@@ -299,7 +301,12 @@ class PreviewChecker:
         for idx, (file_path, source_id) in enumerate(video_files.items()):
             # For existing files, we don't have dest_path, so use backward compatibility
             # Check preview in old location: /.previews/{source_id}.jpg
-            preview_path_old = f"/.previews/{source_id}.jpg"
+            
+            relative_path = file_path.relative_to(relative_to)
+            
+            preview_path = f"{dest_path}/{relative_path.with_suffix('.jpg')}"
+            
+            print(preview_path)
             
             logger.debug(
                 "PreviewChecker: [%d/%d] Checking preview for '%s' (source_id: %s)",
@@ -307,7 +314,7 @@ class PreviewChecker:
             )
 
             # Check if preview exists in MEGA (backward compatibility location)
-            preview_exists = await self._storage.exists(preview_path_old)
+            preview_exists = await self._storage.exists(preview_path)
             
             if preview_exists:
                 logger.debug(
