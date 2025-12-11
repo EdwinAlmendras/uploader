@@ -210,38 +210,67 @@ class StorageService:
     async def upload_preview(
         self,
         path: Path,
-        source_id: str
+        source_id: Optional[str] = None,
+        dest_path: Optional[str] = None,
+        filename: Optional[str] = None
     ) -> Optional[str]:
         """
-        Upload preview to /.previews/{source_id}.jpg
+        Upload preview to the same path as the video, or to .previews folder.
         
         Args:
             path: Path to preview image
-            source_id: Source ID for naming
+            source_id: Source ID for naming (backward compatibility, used if dest_path/filename not provided)
+            dest_path: Destination folder path (same as video)
+            filename: Preview filename (e.g., "VIDEO.jpg")
             
         Returns:
             Handle of uploaded preview or None on failure
         """
         try:
-            # Get or create .previews folder
-            folder_handle = await self._ensure_preview_folder()
-            
-            if not folder_handle:
-                print(f"[storage] Failed to get/create .previews folder")
-                return None
-            
-            # Upload with source_id as name
-            preview_name = f"{source_id}.jpg"
-            node = await self._client.upload(
-                path,
-                dest_folder=folder_handle,
-                name=preview_name
-            )
-            
-            return node.handle if node else None
+            if dest_path and filename:
+                # New behavior: upload to same path as video
+                # Get or create destination folder (same as video)
+                folder_handle = await self._get_or_create_folder(dest_path)
+                
+                if not folder_handle:
+                    logger.error(f"[storage] Failed to get/create folder: {dest_path}")
+                    return None
+                
+                # Upload with the specified filename
+                node = await self._client.upload(
+                    path,
+                    dest_folder=folder_handle,
+                    name=filename
+                )
+                
+                logger.info(f"[storage] Uploaded preview to {dest_path}/{filename}")
+                return node.handle if node else None
+            else:
+                # Backward compatibility: upload to .previews folder
+                if not source_id:
+                    logger.error("[storage] source_id required for backward compatibility")
+                    return None
+                
+                # Get or create .previews folder
+                folder_handle = await self._ensure_preview_folder()
+                
+                if not folder_handle:
+                    logger.error("[storage] Failed to get/create .previews folder")
+                    return None
+                
+                # Upload with source_id as name
+                preview_name = f"{source_id}.jpg"
+                node = await self._client.upload(
+                    path,
+                    dest_folder=folder_handle,
+                    name=preview_name
+                )
+                
+                logger.info(f"[storage] Uploaded preview to /.previews/{preview_name}")
+                return node.handle if node else None
             
         except Exception as e:
-            print(f"[storage] Upload preview error: {e}")
+            logger.error(f"[storage] Upload preview error: {e}")
             return None
     
     async def _ensure_preview_folder(self) -> Optional[str]:

@@ -2,7 +2,8 @@
 import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
-from uploader.orchestrator import UploadOrchestrator, FolderUploadResult, UploadTask
+from uploader.orchestrator.core import UploadOrchestrator
+from uploader.orchestrator.models import FolderUploadResult, UploadResult
 from uploader.models import UploadConfig, TelegramInfo
 
 
@@ -12,17 +13,16 @@ class TestOrchestratorRefactored:
     @pytest.mark.asyncio
     async def test_orchestrator_imports(self):
         """Test that orchestrator imports correctly."""
-        from uploader.orchestrator import UploadOrchestrator
-        from uploader.orchestrator.models import FolderUploadResult, UploadTask
-        from uploader.orchestrator.parallel import get_parallel_count
+        from uploader.orchestrator.core import UploadOrchestrator
+        from uploader.orchestrator.models import FolderUploadResult, UploadResult
         from uploader.orchestrator.file_collector import FileCollector
         from uploader.orchestrator.preview_handler import PreviewHandler
         from uploader.orchestrator.single_upload import SingleUploadHandler
-        from uploader.orchestrator.folder_upload import FolderUploadHandler
+        from uploader.orchestrator.folder.handler import FolderUploadHandler
         
         assert UploadOrchestrator is not None
         assert FolderUploadResult is not None
-        assert UploadTask is not None
+        assert UploadResult is not None
     
     @pytest.mark.asyncio
     async def test_parallel_count_calculation(self):
@@ -64,8 +64,6 @@ class TestOrchestratorRefactored:
     
     def test_folder_upload_result(self):
         """Test FolderUploadResult model."""
-        from uploader.models import UploadResult
-        
         result = FolderUploadResult(
             success=True,
             folder_name="test",
@@ -81,6 +79,8 @@ class TestOrchestratorRefactored:
     
     def test_upload_task(self):
         """Test UploadTask model."""
+        from uploader.orchestrator.models import UploadTask
+        
         task = UploadTask(
             file_path=Path("test.mp4"),
             source_id="abc123",

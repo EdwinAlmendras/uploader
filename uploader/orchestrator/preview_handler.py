@@ -3,6 +3,9 @@ import asyncio
 from pathlib import Path
 from typing import Optional
 import shutil
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class PreviewHandler:
@@ -23,9 +26,16 @@ class PreviewHandler:
         self,
         path: Path,
         source_id: str,
-        duration: float
+        duration: float,
+        dest_path: Optional[str] = None,
+        filename: Optional[str] = None
     ) -> Optional[str]:
-        """Generate and upload preview grid to /.previews/{source_id}.jpg"""
+        """
+        Generate and upload preview grid to the same path as the video.
+        
+        If dest_path and filename are provided, uploads to {dest_path}/{filename}.jpg
+        Otherwise, falls back to old behavior (/.previews/{source_id}.jpg) for backward compatibility.
+        """
         try:
             # Verify file exists before generating preview
             path = Path(path)
@@ -40,8 +50,30 @@ class PreviewHandler:
                 print(f"[preview] Failed to generate grid for {path.name}")
                 return None
             
-            # Upload to /.previews/{source_id}.jpg
-            handle = await self._storage.upload_preview(grid_path, source_id)
+            # Determine preview filename: use video filename with .jpg extension
+            if filename:
+                # Remove extension from video filename and add .jpg
+                video_stem = Path(filename).stem
+                preview_filename = f"{video_stem}.jpg"
+            else:
+                # Fallback to source_id for backward compatibility
+                preview_filename = f"{source_id}.jpg"
+            
+            # Upload to same path as video, or fallback to .previews
+            if dest_path:
+                handle = await self._storage.upload_preview(
+                    grid_path, 
+                    dest_path=dest_path,
+                    filename=preview_filename
+                )
+                preview_path = f"{dest_path}/{preview_filename}"
+            else:
+                # Backward compatibility: use old .previews path
+                handle = await self._storage.upload_preview(
+                    grid_path,
+                    source_id=source_id
+                )
+                preview_path = f"/.previews/{source_id}.jpg"
             
             # Cleanup temp file
             try:
@@ -53,9 +85,9 @@ class PreviewHandler:
                 pass
             
             if handle:
-                print(f"[preview] Uploaded: /.previews/{source_id}.jpg")
+                print(f"[preview] Uploaded: {preview_path}")
             else:
-                print(f"[preview] Upload failed for {source_id}")
+                print(f"[preview] Upload failed for {preview_path}")
             
             return handle
             

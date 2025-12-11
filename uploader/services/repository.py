@@ -70,6 +70,13 @@ class MetadataRepository(IMetadataRepository):
         
         Args:
             data: Document data from analyzer
+                - source_id: Document source ID
+                - filename: Filename
+                - mimetype: MIME type
+                - mtime: Modification time (optional)
+                - ctime: Creation time (optional)
+                - blake3_hash: BLAKE3 hash (optional)
+                - set_doc_id: Set document ID reference (optional, for images in sets)
         """
         payload = {
             "source_id": data["source_id"],
@@ -82,6 +89,10 @@ class MetadataRepository(IMetadataRepository):
         # Only send blake3_hash (sha256sum is no longer generated)
         if "blake3_hash" in data:
             payload["blake3_hash"] = data["blake3_hash"]
+        
+        # Add set_doc_id if present (for images that belong to a set)
+        if "set_doc_id" in data:
+            payload["set_doc_id"] = data["set_doc_id"]
         
         await self._api.post("/documents", json=payload)
     
@@ -216,6 +227,36 @@ class MetadataRepository(IMetadataRepository):
             "fetched_at": datetime.utcnow().isoformat(),
         })
     
+    async def save_set_document(self, data: Dict[str, Any]) -> None:
+        """
+        Save set document (the 7z archive document).
+        
+        Args:
+            data: Set document data
+                - source_id: Set document source ID
+                - filename: Archive filename (e.g., "set_name.7z")
+                - mimetype: MIME type (application/x-7z-compressed)
+                - set_image_count: Number of images in the set
+                - set_name: Name of the set
+        """
+        payload = {
+            "source_id": data["source_id"],
+            "filename": data["filename"],
+            "mimetype": data.get("mimetype", "application/x-7z-compressed"),
+            "set_image_count": data.get("set_image_count", 0),
+            "set_name": data.get("set_name", ""),
+        }
+        
+        # Include optional fields
+        if "mtime" in data:
+            payload["mtime"] = data["mtime"].isoformat() if data.get("mtime") else None
+        if "ctime" in data:
+            payload["ctime"] = data["ctime"].isoformat() if data.get("ctime") else None
+        if "blake3_hash" in data:
+            payload["blake3_hash"] = data["blake3_hash"]
+        
+        await self._api.post("/documents", json=payload)
+    
     def prepare_telegram(self, document_id: str, telegram_info: TelegramInfo) -> Dict[str, Any]:
         """Prepare telegram metadata dict for batch."""
         return {
@@ -301,6 +342,10 @@ class MetadataRepository(IMetadataRepository):
         # Only include blake3_hash (sha256sum is no longer generated)
         if "blake3_hash" in data:
             payload["blake3_hash"] = data["blake3_hash"]
+        
+        # Add set_doc_id if present
+        if "set_doc_id" in data:
+            payload["set_doc_id"] = data["set_doc_id"]
         
         return payload
     

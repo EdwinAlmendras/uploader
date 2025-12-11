@@ -105,22 +105,37 @@ class FileProcessor:
         self,
         file_path: Path,
         source_id: str,
-        duration: float
+        duration: float,
+        dest_path: Optional[str] = None
     ) -> Optional[str]:
         """
         Generate and upload preview in background.
         
         This method is called separately and doesn't block the main upload flow.
+        
+        Args:
+            file_path: Path to video file
+            source_id: Source ID (for backward compatibility)
+            duration: Video duration
+            dest_path: Destination path where video was uploaded (for preview location)
         """
         if not self._config.generate_preview:
             return None
         
         try:
+            # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
+            preview_filename = file_path.stem + ".jpg"
+            
             preview_handle = await self._preview_handler.upload_preview(
-                file_path, source_id, duration
+                file_path, 
+                source_id, 
+                duration,
+                dest_path=dest_path,
+                filename=preview_filename
             )
             if preview_handle:
-                logger.info("Preview uploaded in background (handle: %s) for %s", preview_handle, file_path.name)
+                preview_location = f"{dest_path}/{preview_filename}" if dest_path else f"/.previews/{source_id}.jpg"
+                logger.info("Preview uploaded in background (handle: %s) for %s at %s", preview_handle, file_path.name, preview_location)
             return preview_handle
         except Exception as e:
             logger.error("Error generating preview for %s: %s", file_path.name, e, exc_info=True)

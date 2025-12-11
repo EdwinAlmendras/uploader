@@ -297,15 +297,17 @@ class PreviewChecker:
 
         regenerated = 0
         for idx, (file_path, source_id) in enumerate(video_files.items()):
-            preview_path = f"/.previews/{source_id}.jpg"
+            # For existing files, we don't have dest_path, so use backward compatibility
+            # Check preview in old location: /.previews/{source_id}.jpg
+            preview_path_old = f"/.previews/{source_id}.jpg"
             
             logger.debug(
-                "PreviewChecker: [%d/%d] Checking preview for '%s' (source_id: %s) at '%s'",
-                idx + 1, total, file_path.name, source_id, preview_path
+                "PreviewChecker: [%d/%d] Checking preview for '%s' (source_id: %s)",
+                idx + 1, total, file_path.name, source_id
             )
 
-            # Check if preview exists in MEGA
-            preview_exists = await self._storage.exists(preview_path)
+            # Check if preview exists in MEGA (backward compatibility location)
+            preview_exists = await self._storage.exists(preview_path_old)
             
             if preview_exists:
                 logger.debug(
@@ -325,8 +327,11 @@ class PreviewChecker:
                     
                     if duration > 0:
                         # Regenerate and upload preview
+                        # Note: For existing files, we don't have dest_path, so use backward compatibility
+                        # Preview will be uploaded using source_id (old behavior)
                         preview_handle = await self._preview_handler.upload_preview(
                             file_path, source_id, duration
+                            # dest_path and filename not provided - will use backward compatibility
                         )
                         if preview_handle:
                             logger.info(
