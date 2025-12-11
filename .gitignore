@@ -4,7 +4,8 @@
 .env.local
 .env.*.local
 downloads
-
+test_files/*
+test_files/
 # Session files
 *.session
 bot_session.session
