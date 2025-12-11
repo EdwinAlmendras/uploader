@@ -58,7 +58,7 @@ class ManagedStorageService:
         self._config = config or UploadConfig()
         self._collection_name = collection_name
         self._api_url = api_url or os.getenv("MEGA_ACCOUNT_API_URL", "http://127.0.0.1:8000")
-        
+        self._started = False
         if not sessions_dir:
             sessions_dir = os.getenv("MEGA_SESSIONS_DIR")
             if not sessions_dir:
