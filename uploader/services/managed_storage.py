@@ -73,6 +73,14 @@ class ManagedStorageService:
         self._buffer_mb = buffer_mb
         self._auto_create = auto_create
         self._manager = None  # Will be initialized in start() if collection_name is provided
+        
+        # Account locking for folder uploads
+        self._locked_client = None
+        self._locked_account = None
+        
+        # Account tracking and caching
+        self._last_account = None
+        self._folder_cache: Dict[str, Dict[str, str]] = {}
     
     @property
     def manager(self) -> AccountManager:
