@@ -72,8 +72,10 @@ class SingleUploadHandler:
             if self._config.generate_preview:
                 # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
                 preview_filename = path.stem + ".jpg"
+                # Normalize dest_path: use empty string for root instead of None
+                preview_dest = dest if dest is not None else ""
                 preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration, dest_path=dest, filename=preview_filename
+                    path, source_id, duration, dest_path=preview_dest, filename=preview_filename
                 )
             
             return UploadResult.ok(
@@ -128,8 +130,10 @@ class SingleUploadHandler:
             if self._config.generate_preview:
                 # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
                 preview_filename = path.stem + ".jpg"
+                # Normalize dest_path: use empty string for root instead of None
+                preview_dest = dest if dest is not None else ""
                 preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration, dest_path=dest, filename=preview_filename
+                    path, source_id, duration, dest_path=preview_dest, filename=preview_filename
                 )
             
             return UploadResult.ok(
@@ -261,9 +265,11 @@ class SingleUploadHandler:
             if is_vid and self._config.generate_preview:
                 # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
                 preview_filename = path.stem + ".jpg"
+                # Normalize dest_path: use empty string for root instead of None
+                preview_dest = dest if dest is not None else ""
                 # Generate preview synchronously to ensure file exists
                 preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration, dest_path=dest, filename=preview_filename
+                    path, source_id, duration, dest_path=preview_dest, filename=preview_filename
                 )
             
             return UploadResult.ok(
