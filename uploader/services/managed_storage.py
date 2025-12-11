@@ -355,18 +355,23 @@ class ManagedStorageService:
         Returns:
             Handle of uploaded file or None on failure
         """
+        logger.info(f"[storage] upload_video called: path={path.name}, dest={dest}, source_id={source_id}")
         path = Path(path)
         file_size = path.stat().st_size
+        original_dest = dest
         dest = dest or self._config.dest_folder
+        logger.info(f"[storage] upload_video: original_dest={original_dest}, final_dest={dest}, config.dest_folder={self._config.dest_folder}")
         
         # Use locked account if available, otherwise select automatically
         if self._locked_client and self._locked_account:
             client = self._locked_client
             current_account = self._locked_account
+            logger.info(f"[storage] upload_video: Using locked account: {current_account}")
         else:
             # Get client with enough space
             client = await self._manager.get_client_for(file_size)
             current_account = self._manager._current_account
+            logger.info(f"[storage] upload_video: Selected account: {current_account}")
         
         # Track account changes and clear cache if needed
         if current_account != self._last_account:
@@ -374,15 +379,23 @@ class ManagedStorageService:
             self._last_account = current_account
         
         # Get or create destination folder (uses account-specific cache)
+        logger.info(f"[storage] upload_video: Getting/creating folder: dest={dest}, account={current_account}")
         dest_handle = await self._get_or_create_folder(client, dest, current_account)
+        logger.info(f"[storage] upload_video: Folder handle: {dest_handle}")
         
         # Upload with mega_id (flat 'm' attribute)
+        logger.info(f"[storage] upload_video: Starting upload to handle={dest_handle}, filename={path.name}")
         node = await client.upload(
             path,
             dest_folder=dest_handle,
             progress_callback=progress_callback,
             mega_id=source_id
         )
+        
+        if node:
+            logger.info(f"[storage] upload_video: Upload successful, handle={node.handle}")
+        else:
+            logger.error(f"[storage] upload_video: Upload failed, node is None")
         
         # Update space tracking in manager
         if node and current_account:
@@ -526,69 +539,66 @@ class ManagedStorageService:
         filename: Optional[str] = None
     ) -> Optional[str]:
         """
-        Upload preview to the same path as the video, or to .previews folder.
+        Upload preview to the same path as the video.
         
         Args:
             path: Path to preview image
-            source_id: Source ID for naming (backward compatibility, used if dest_path/filename not provided)
-            dest_path: Destination folder path (same as video)
-            filename: Preview filename (e.g., "VIDEO.jpg")
+            source_id: Source ID (not used, kept for compatibility)
+            dest_path: Destination folder path (same as video). If None, uses config.dest_folder
+            filename: Preview filename (e.g., "VIDEO.jpg"). Required.
             
         Returns:
             Handle of uploaded preview or None on failure
         """
+        logger.info(f"[storage] upload_preview called: path={path.name}, dest_path={dest_path}, filename={filename}, source_id={source_id}")
+        
+        if not filename:
+            logger.error("[storage] upload_preview: filename is required, returning None")
+            return None
+        
         try:
             path = Path(path)
             file_size = path.stat().st_size
+            logger.info(f"[storage] upload_preview: Preview file size: {file_size} bytes")
+            
+            # Use same dest logic as upload_video: fallback to config.dest_folder
+            original_dest_path = dest_path
+            dest = dest_path if dest_path is not None else self._config.dest_folder
+            logger.info(f"[storage] upload_preview: original_dest_path={original_dest_path}, final_dest={dest}, config.dest_folder={self._config.dest_folder}")
             
             # Get client with enough space
             client = await self._manager.get_client_for(file_size)
             current_account = self._manager._current_account or "default"
+            logger.info(f"[storage] upload_preview: Selected account: {current_account}")
             
-            if dest_path and filename:
-                # New behavior: upload to same path as video
-                # Get or create destination folder (same as video)
-                folder_handle = await self._get_or_create_folder(client, dest_path, current_account)
-                
-                if not folder_handle:
-                    logger.error(f"[storage] Failed to get/create folder: {dest_path}")
-                    return None
-                
-                # Upload with the specified filename
-                node = await client.upload(
-                    path,
-                    dest_folder=folder_handle,
-                    name=filename
-                )
-                
-                logger.info(f"[storage] Uploaded preview to {dest_path}/{filename}")
-                return node.handle if node else None
+            # Get or create destination folder (same as video)
+            logger.info(f"[storage] upload_preview: Getting/creating folder: dest={dest}, account={current_account}")
+            folder_handle = await self._get_or_create_folder(client, dest, current_account)
+            logger.info(f"[storage] upload_preview: Folder handle: {folder_handle}")
+            
+            if not folder_handle:
+                logger.error(f"[storage] upload_preview: Failed to get/create folder: {dest or 'root'}")
+                return None
+            
+            # Upload with the specified filename
+            logger.info(f"[storage] upload_preview: Starting upload to handle={folder_handle}, filename={filename}")
+            node = await client.upload(
+                path,
+                dest_folder=folder_handle,
+                name=filename
+            )
+            
+            if node:
+                preview_location = f"{dest}/{filename}" if dest else f"/{filename}"
+                logger.info(f"[storage] upload_preview: Upload successful, handle={node.handle}, location={preview_location}")
             else:
-                # Backward compatibility: upload to .previews folder
-                if not source_id:
-                    logger.error("[storage] source_id required for backward compatibility")
-                    return None
-                
-                # Get or create .previews folder
-                folder_handle = await self._ensure_preview_folder(client, current_account)
-                
-                if not folder_handle:
-                    logger.error("[storage] Failed to get/create .previews folder")
-                    return None
-                
-                # Upload with source_id as name
-                preview_name = f"{source_id}.jpg"
-                node = await client.upload(
-                    path,
-                    dest_folder=folder_handle,
-                    name=preview_name
-                )
-                
-                logger.info(f"[storage] Uploaded preview to /.previews/{preview_name}")
-                return node.handle if node else None
+                logger.error(f"[storage] upload_preview: Upload failed, node is None")
+            
+            preview_location = f"{dest}/{filename}" if dest else f"/{filename}"
+            return node.handle if node else None
             
         except Exception as e:
-            logger.error(f"[storage] Upload preview error: {e}")
+            logger.error(f"[storage] upload_preview: Exception occurred: {e}", exc_info=True)
             return None
     
     async def _ensure_preview_folder(self, client, account_name: Optional[str] = None) -> Optional[str]:
