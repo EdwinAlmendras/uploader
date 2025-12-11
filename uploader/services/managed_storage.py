@@ -7,10 +7,13 @@ Creates new sessions when all accounts are full.
 Requires: pip install mega-account (or from local)
 """
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+import hashlib
+import os
 
 from ..models import UploadConfig
 from mega_account import AccountManager, NoSpaceError
+from mega_account.api_client import AccountAPIClient
 import logging
 
 logger = logging.getLogger("uploader.services.managed_storage")
@@ -37,7 +40,9 @@ class ManagedStorageService:
         sessions_dir: Optional[Path] = None,
         config: Optional[UploadConfig] = None,
         buffer_mb: int = 100,
-        auto_create: bool = True
+        auto_create: bool = True,
+        collection_name: Optional[str] = None,
+        api_url: Optional[str] = None
     ):
         """
         Initialize managed storage service.
@@ -47,10 +52,14 @@ class ManagedStorageService:
             config: Upload configuration
             buffer_mb: Buffer space to keep free per account (MB)
             auto_create: Prompt for new account when all are full
+            collection_name: Optional collection name to load only sessions from that collection
+            api_url: API URL for mega-account-api (default: http://127.0.0.1:8000)
         """
         self._config = config or UploadConfig()
+        self._collection_name = collection_name
+        self._api_url = api_url or os.getenv("MEGA_ACCOUNT_API_URL", "http://127.0.0.1:8000")
+        
         if not sessions_dir:
-            import os
             sessions_dir = os.getenv("MEGA_SESSIONS_DIR")
             if not sessions_dir:
                 sessions_dir = Path.home() / ".config" / "mega" / "sessions"
@@ -59,23 +68,106 @@ class ManagedStorageService:
         else:
             if not sessions_dir.exists():
                 sessions_dir.mkdir(parents=True, exist_ok=True)
-            
-            self._manager = AccountManager(
-                sessions_dir=sessions_dir,
-                buffer_mb=buffer_mb,
-                auto_create=auto_create
-            )
+        
+        self._sessions_dir = Path(sessions_dir)
+        self._buffer_mb = buffer_mb
+        self._auto_create = auto_create
+        self._manager = None  # Will be initialized in start() if collection_name is provided
     
     @property
     def manager(self) -> AccountManager:
         """Get the underlying AccountManager."""
+        if self._manager is None:
+            raise RuntimeError("Manager not initialized. Call start() first.")
         return self._manager
     
     async def start(self) -> 'ManagedStorageService':
         """Start the service and load accounts."""
-        await self._manager.load_accounts()
+        # If collection_name is provided, load only sessions from that collection
+        if self._collection_name:
+            await self._load_manager_from_collection()
+        else:
+            # Default behavior: load all sessions from directory
+            if self._manager is None:
+                self._manager = AccountManager(
+                    sessions_dir=self._sessions_dir,
+                    buffer_mb=self._buffer_mb,
+                    auto_create=self._auto_create
+                )
+            await self._manager.load_accounts()
+        
         self._started = True
         return self
+    
+    async def _load_manager_from_collection(self) -> None:
+        """
+        Load AccountManager with only sessions from the specified collection.
+        
+        This method:
+        1. Calls mega-account-api to get emails from the collection
+        2. Builds session paths from emails (md5(email).session) in sessions_dir
+        3. Creates AccountManager.from_session_paths() with those specific paths
+        """
+        try:
+            logger.info(f"Loading collection: {self._collection_name}")
+            
+            # Get emails from collection via API
+            async with AccountAPIClient(api_url=self._api_url) as api:
+                emails = await api.get_collection_emails(collection_name=self._collection_name)
+            
+            if not emails:
+                logger.warning(f"No emails found in collection: {self._collection_name}")
+                raise ValueError(f"No emails found in collection: {self._collection_name}")
+            
+            logger.info(f"Found {len(emails)} account(s) in collection: {self._collection_name}")
+            
+            # Build session paths from emails (md5(email).session)
+            session_paths: List[Path] = []
+            for email in emails:
+                email_hash = hashlib.md5(email.lower().encode()).hexdigest()
+                session_path = self._sessions_dir / f"{email_hash}.session"
+                if session_path.exists():
+                    session_paths.append(session_path)
+                    logger.debug(f"Found session for {email}: {session_path}")
+                else:
+                    logger.warning(f"Session not found for {email}: {session_path}")
+            
+            if not session_paths:
+                logger.warning(f"No session files found for collection: {self._collection_name}")
+                # Fall back to loading all sessions
+                self._manager = AccountManager(
+                    sessions_dir=self._sessions_dir,
+                    buffer_mb=self._buffer_mb,
+                    auto_create=self._auto_create
+                )
+                await self._manager.load_accounts()
+                return
+            
+            logger.info(f"Loading {len(session_paths)} session(s) from collection")
+            
+            # Create AccountManager with only these session paths
+            self._manager = AccountManager.from_session_paths(
+                session_paths=session_paths,
+                buffer_mb=self._buffer_mb,
+                auto_create=self._auto_create
+            )
+            
+            # Load the accounts
+            await self._manager.load_accounts()
+            
+            loaded_count = len(self._manager.accounts)
+            logger.info(f"Successfully loaded {loaded_count} session(s) from collection")
+            
+        except Exception as e:
+            logger.error(f"Failed to load collection {self._collection_name}: {e}")
+            logger.info("Falling back to loading all sessions from directory")
+            # Fall back to loading all sessions
+            self._manager = AccountManager(
+                sessions_dir=self._sessions_dir,
+                buffer_mb=self._buffer_mb,
+                auto_create=self._auto_create
+            )
+            await self._manager.load_accounts()
     
     async def close(self) -> None:
         """Close all connections."""
@@ -114,7 +206,7 @@ class ManagedStorageService:
         
     
     async def check_accounts_space(self):
-        if not self._started:
+        if not self._started or self._manager is None:
             await self.start()
             
         MIN_FREE_SPACE_GB = 1
