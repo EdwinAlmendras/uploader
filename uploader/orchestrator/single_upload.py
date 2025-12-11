@@ -1,6 +1,8 @@
 """Single file upload handlers."""
+import asyncio
 from pathlib import Path
 from typing import Optional
+from mediakit.analyzer import generate_id
 from ..models import UploadResult, SocialInfo, TelegramInfo
 from .preview_handler import PreviewHandler
 
@@ -42,24 +44,30 @@ class SingleUploadHandler:
         path = Path(path)
         
         try:
-            # 1. Analyze
-            tech_data = await self._analyzer.analyze_async(path)
-            source_id = tech_data["source_id"]
-            duration = tech_data.get("duration", 0)
+            # 1. Generate source_id quickly (doesn't require analysis)
+            source_id = generate_id()
             
-            # 2. Save metadata
-            await self._repository.save_document(tech_data)
-            await self._repository.save_video_metadata(source_id, tech_data)
-            
-            # 3. Upload video
-            mega_handle = await self._storage.upload_video(
-                path, dest, source_id, progress_callback
+            # 2. Start analysis and upload in parallel
+            analyze_task = asyncio.create_task(self._analyzer.analyze_async(path))
+            upload_task = asyncio.create_task(
+                self._storage.upload_video(path, dest, source_id, progress_callback)
             )
+            
+            # 3. Wait for both to complete
+            tech_data, mega_handle = await asyncio.gather(analyze_task, upload_task)
+            
+            # Replace source_id from analysis with our pre-generated one
+            tech_data["source_id"] = source_id
+            duration = tech_data.get("duration", 0)
             
             if not mega_handle:
                 return UploadResult.fail(path.name, "Upload to MEGA failed")
             
-            # 4. Generate and upload preview
+            # 4. Save metadata only if upload was successful
+            await self._repository.save_document(tech_data)
+            await self._repository.save_video_metadata(source_id, tech_data)
+            
+            # 5. Generate and upload preview
             preview_handle = None
             if self._config.generate_preview:
                 # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
@@ -91,25 +99,29 @@ class SingleUploadHandler:
         path = Path(path)
         
         try:
-            # 1. Analyze
-            tech_data = await self._analyzer.analyze_async(path)
-            source_id = tech_data["source_id"]
-            duration = tech_data.get("duration", 0)
+            # 1. Generate source_id quickly (doesn't require analysis)
+            source_id = generate_id()
             
-            # 2. Save metadata (document + video_metadata)
-            await self._repository.save_document(tech_data)
-            await self._repository.save_video_metadata(source_id, tech_data)
-            
-            # 3. Save social info (channel + social_video)
-            await self._repository.save_social_info(source_id, social_info)
-            
-            # 4. Upload video
-            mega_handle = await self._storage.upload_video(
-                path, dest, source_id, progress_callback
+            # 2. Start analysis and upload in parallel
+            analyze_task = asyncio.create_task(self._analyzer.analyze_async(path))
+            upload_task = asyncio.create_task(
+                self._storage.upload_video(path, dest, source_id, progress_callback)
             )
+            
+            # 3. Wait for both to complete
+            tech_data, mega_handle = await asyncio.gather(analyze_task, upload_task)
+            
+            # Replace source_id from analysis with our pre-generated one
+            tech_data["source_id"] = source_id
+            duration = tech_data.get("duration", 0)
             
             if not mega_handle:
                 return UploadResult.fail(path.name, "Upload to MEGA failed")
+            
+            # 4. Save metadata only if upload was successful
+            await self._repository.save_document(tech_data)
+            await self._repository.save_video_metadata(source_id, tech_data)
+            await self._repository.save_social_info(source_id, social_info)
             
             # 5. Generate and upload preview
             preview_handle = None
@@ -140,21 +152,27 @@ class SingleUploadHandler:
         path = Path(path)
         
         try:
-            # 1. Analyze
-            photo_data = await self._analyzer.analyze_photo_async(path)
-            source_id = photo_data["source_id"]
+            # 1. Generate source_id quickly (doesn't require analysis)
+            source_id = generate_id()
             
-            # 2. Save metadata
-            await self._repository.save_document(photo_data)
-            await self._repository.save_photo_metadata(source_id, photo_data)
-            
-            # 3. Upload photo
-            mega_handle = await self._storage.upload_video(
-                path, dest, source_id, progress_callback
+            # 2. Start analysis and upload in parallel
+            analyze_task = asyncio.create_task(self._analyzer.analyze_photo_async(path))
+            upload_task = asyncio.create_task(
+                self._storage.upload_video(path, dest, source_id, progress_callback)
             )
+            
+            # 3. Wait for both to complete
+            photo_data, mega_handle = await asyncio.gather(analyze_task, upload_task)
+            
+            # Replace source_id from analysis with our pre-generated one
+            photo_data["source_id"] = source_id
             
             if not mega_handle:
                 return UploadResult.fail(path.name, "Upload to MEGA failed")
+            
+            # 4. Save metadata only if upload was successful
+            await self._repository.save_document(photo_data)
+            await self._repository.save_photo_metadata(source_id, photo_data)
             
             return UploadResult.ok(
                 source_id=source_id,
@@ -195,21 +213,37 @@ class SingleUploadHandler:
         try:
             from mediakit import is_video, is_image
             
-            # 1. Detect type and analyze
-            if is_video(path):
-                tech_data = await self._analyzer.analyze_async(path)
-                source_id = tech_data["source_id"]
-                duration = tech_data.get("duration", 0)
-                is_vid = True
-            elif is_image(path):
-                tech_data = await self._analyzer.analyze_photo_async(path)
-                source_id = tech_data["source_id"]
-                duration = 0
-                is_vid = False
-            else:
+            # 1. Detect type
+            is_vid = is_video(path)
+            is_img = is_image(path)
+            
+            if not is_vid and not is_img:
                 return UploadResult.fail(path.name, f"Unsupported file type: {path.suffix}")
             
-            # 2. Save base metadata
+            # 2. Generate source_id quickly (doesn't require analysis)
+            source_id = generate_id()
+            
+            # 3. Start analysis and upload in parallel
+            if is_vid:
+                analyze_task = asyncio.create_task(self._analyzer.analyze_async(path))
+            else:
+                analyze_task = asyncio.create_task(self._analyzer.analyze_photo_async(path))
+            
+            upload_task = asyncio.create_task(
+                self._storage.upload_video(path, dest, source_id, progress_callback)
+            )
+            
+            # 4. Wait for both to complete
+            tech_data, mega_handle = await asyncio.gather(analyze_task, upload_task)
+            
+            # Replace source_id from analysis with our pre-generated one
+            tech_data["source_id"] = source_id
+            duration = tech_data.get("duration", 0) if is_vid else 0
+            
+            if not mega_handle:
+                return UploadResult.fail(path.name, "Upload to MEGA failed")
+            
+            # 5. Save metadata only if upload was successful
             await self._repository.save_document(tech_data)
             
             if is_vid:
@@ -217,19 +251,11 @@ class SingleUploadHandler:
             else:
                 await self._repository.save_photo_metadata(source_id, tech_data)
             
-            # 3. Save Telegram metadata if provided
+            # Save Telegram metadata if provided
             if telegram_info:
                 await self._repository.save_telegram(source_id, telegram_info)
             
-            # 4. Upload to MEGA
-            mega_handle = await self._storage.upload_video(
-                path, dest, source_id, progress_callback
-            )
-            
-            if not mega_handle:
-                return UploadResult.fail(path.name, "Upload to MEGA failed")
-            
-            # 5. Generate and upload preview for videos
+            # 6. Generate and upload preview for videos
             # Wait for preview to complete before returning to ensure file is not deleted
             preview_handle = None
             if is_vid and self._config.generate_preview:
