@@ -46,7 +46,6 @@ class FolderUploadHandler:
         self._set_processor = ImageSetProcessor(analyzer, repository, storage, config)
         self._existence_checker = FileExistenceChecker(storage)
         self._blake3_deduplicator = Blake3Deduplicator(repository, storage) if repository else None
-        self._preview_handler = preview_handler  # Store preview_handler
         self._preview_checker = PreviewChecker(storage, preview_handler, analyzer) if repository else None
         self._mega_to_db_synchronizer = MegaToDbSynchronizer(analyzer, repository, storage) if repository else None
         self._upload_coordinator = ParallelUploadCoordinator(self._file_processor, max_parallel=1)
