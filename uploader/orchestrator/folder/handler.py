@@ -219,11 +219,11 @@ class FolderUploadHandler:
                             if exists_in_db:
                                 # File exists in both MEGA and DB - skip
                                 existing_files_with_source_id[file_path] = mega_info.source_id
-                                logger.debug(
+                        logger.debug(
                                     "File '%s' exists in MEGA and DB (source_id: %s) - SKIP",
                                     file_path.name, mega_info.source_id
-                                )
-                            else:
+                        )
+                    else:
                                 # File exists in MEGA but NOT in DB - sync to DB
                                 if process:
                                     await process.emit_sync_start(file_path.name)
@@ -251,7 +251,7 @@ class FolderUploadHandler:
                                     )
                                     if process:
                                         await process.emit_sync_complete(file_path.name, False)
-                        else:
+                else:
                             # File in MEGA has no mega_id - cannot sync, treat as new
                             logger.debug(
                                 "File '%s' exists in MEGA but has no mega_id - cannot sync to DB",
@@ -360,8 +360,8 @@ class FolderUploadHandler:
                         logger.debug(
                             "After blake3_hash check: %d files skipped (in database), %d files remaining to upload",
                             skipped_hash, len(files_to_check_db) - skipped_hash
-                        )
-                    else:
+                    )
+                else:
                         logger.debug("After blake3_hash check: All %d files are new (not in database)", len(files_to_check_db))
                 else:
                     # No deduplicator available, use files from MEGA check
