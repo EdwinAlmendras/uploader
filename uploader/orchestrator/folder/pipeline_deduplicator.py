@@ -391,11 +391,12 @@ class PipelineDeduplicator:
                 )
                 return
             
-            node, client = node_info
+            _, node = node_info
             
-            # Get the full path of the video in MEGA (node.path is a property)
+            # Get the full path of the video in MEGA
             video_path = node.path
-            
+
+        
             # Construct preview path by changing extension to .jpg
             preview_path = video_path.rsplit('.', 1)[0] + '.jpg'
             

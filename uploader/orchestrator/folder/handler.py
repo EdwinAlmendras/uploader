@@ -252,11 +252,11 @@ class FolderUploadHandler:
                                     if process:
                                         await process.emit_sync_complete(file_path.name, False)
                 else:
-                            # File in MEGA has no mega_id - cannot sync, treat as new
-                            logger.debug(
-                                "File '%s' exists in MEGA but has no mega_id - cannot sync to DB",
-                                file_path.name
-                            )
+                    # File in MEGA has no mega_id - cannot sync, treat as new
+                    logger.debug(
+                        "File '%s' exists in MEGA but has no mega_id - cannot sync to DB",
+                        file_path.name
+                    )
                     
                     if process:
                         await process.complete_phase("syncing", f"Synced {synced_count} files")
@@ -361,7 +361,7 @@ class FolderUploadHandler:
                             "After blake3_hash check: %d files skipped (in database), %d files remaining to upload",
                             skipped_hash, len(files_to_check_db) - skipped_hash
                     )
-                else:
+                    else:
                         logger.debug("After blake3_hash check: All %d files are new (not in database)", len(files_to_check_db))
                 else:
                     # No deduplicator available, use files from MEGA check
@@ -379,19 +379,6 @@ class FolderUploadHandler:
                     f"{synced_count} synced from MEGA to DB, {total_skipped} total skipped, "
                     f"{len(pending_files)} files to upload"
                 )
-                
-                # Step 2.3: Check and regenerate missing previews for existing files
-                # NOTE: This is now handled automatically in the pipeline during deduplication
-                # (see PipelineDeduplicator._check_and_regenerate_preview)
-                # Keeping this code commented for reference in case we need fallback
-                # previews_regenerated = 0
-                # if existing_files_with_source_id and self._preview_checker:
-                #     logger.info("Checking and regenerating missing previews for existing files")
-                #     previews_regenerated = await self._preview_checker.check_and_regenerate(
-                #         existing_files_with_source_id, dest_path, relative_to=folder_path, progress_callback=progress_callback
-                #     )
-                #     if previews_regenerated > 0:
-                #         logger.info(f"Regenerated {previews_regenerated} missing previews")
                 
                 if process:
                     async with process._stats_lock:
