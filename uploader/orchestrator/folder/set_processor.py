@@ -4,7 +4,7 @@ Set Processor - Processes image sets: thumbnails, 7z creation, and upload.
 Uses mediakit for image processing and archive creation.
 """
 from pathlib import Path
-from typing import List, Optional, Tuple, Callable, Union
+from typing import List, Optional, Tuple, Callable, Union, Dict
 import asyncio
 import logging
 import tempfile
@@ -100,8 +100,9 @@ class ImageSetProcessor:
             cover = self._selector.select_cover(images)
             logger.info(f"Selected cover: {cover.name} (first vertical image)")
             
-            # Generate thumbnails (320px and 1024px)
-            await self._generate_thumbnails(set_folder, images, progress_callback)
+            # Generate thumbnails (320px and 1024px) and calculate perceptual features
+            # Returns dict mapping image_path -> (phash, avg_color_lab)
+            perceptual_features = await self._generate_thumbnails(set_folder, images, progress_callback)
             
             # Step 1.2: Generate grid preview for the set
             logger.info("Generating grid preview for set...")
@@ -115,11 +116,13 @@ class ImageSetProcessor:
             logger.info(f"Generated set source_id: {set_source_id}")
             
             # Step 3: Process all images (analyze and save to API with set_doc_id)
+            # Pass perceptual features to avoid recalculating them
             image_results = await self._process_set_images(
                 set_folder,
                 images,
                 set_source_id,
-                progress_callback
+                progress_callback,
+                perceptual_features=perceptual_features
             )
             
             # Step 4: Create 7z archive
@@ -284,32 +287,68 @@ class ImageSetProcessor:
         image_path: Path,
         thumb_320_dir: Path,
         thumb_1024_dir: Path
-    ) -> bool:
+    ) -> tuple:
         """
         Static function to process a single image (pickleable for ProcessPoolExecutor).
         
         Creates its own ImageProcessor instance to avoid serialization issues.
+        Returns (success: bool, phash: str|None, avg_color_lab: list|None)
         """
         try:
             from mediakit.image.processor import ImageProcessor
+            from mediakit.image.perceptual import calculate_phash, calculate_avg_color_lab
+            from PIL import Image
+            
             processor = ImageProcessor()
             output_name = image_path.stem + ".jpg"
             thumb_320_path = thumb_320_dir / output_name
+            
+            # Generate 320px thumbnail
             processor.thumb(image_path, thumb_320_path, 320)
+            
+            # Generate 1024px preview
             thumb_1024_path = thumb_1024_dir / output_name
             processor.resize(image_path, thumb_1024_path, 1024, resample=Image.Resampling.BICUBIC)
-            return True
+            
+            # Calculate pHash and avg_color_lab using the 320px thumbnail (much faster!)
+            phash_result = None
+            avg_color_result = None
+            
+            try:
+                # Use the thumbnail we just created for faster calculation
+                with Image.open(thumb_320_path) as thumb_img:
+                    # Calculate pHash using thumbnail
+                    phash_result = calculate_phash(image=thumb_img)
+                    # Calculate avg_color_lab using thumbnail
+                    avg_color_result = calculate_avg_color_lab(image=thumb_img)
+            except Exception as e:
+                logger.debug(f"Could not calculate perceptual features from thumbnail for {image_path.name}: {e}")
+                # Fallback: calculate from original image
+                try:
+                    phash_result = calculate_phash(image_path)
+                    avg_color_result = calculate_avg_color_lab(image_path)
+                except Exception:
+                    pass
+            
+            return (True, phash_result, avg_color_result)
         except Exception as e:
             logger.warning(f"Error generating thumbnails for {image_path.name}: {e}")
-            return False
+            return (False, None, None)
     
     async def _generate_thumbnails(
         self,
         set_folder: Path,
         images: List[Path],
         progress_callback: Optional[Callable]
-    ) -> None:
-        """Generate 320px and 1024px thumbnails for all images using ProcessPoolExecutor."""
+    ) -> Dict[Path, Tuple[Optional[str], Optional[List[float]]]]:
+        """
+        Generate 320px and 1024px thumbnails for all images using ProcessPoolExecutor.
+        
+        Also calculates pHash and avg_color_lab using the 320px thumbnails for efficiency.
+        
+        Returns:
+            Dict mapping image_path -> (phash, avg_color_lab)
+        """
         logger.info(f"Generating thumbnails (320px and 1024px) for {len(images)} images...")
         
         # Create thumbnail folders
@@ -329,31 +368,39 @@ class ImageSetProcessor:
         max_workers = os.cpu_count() or os.getenv("IMAGE_RESIZE_MAX_WORKERS")
         logger.info(f"Using ProcessPoolExecutor with {max_workers} workers for {total_images} images")
         
+        # Store perceptual features (pHash and avg_color_lab) for each image
+        # Maps image_path -> (phash, avg_color_lab)
+        perceptual_features = {}
+        
         # Create executor and process all images
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks to the executor
-            futures = [
+            futures = {
                 executor.submit(
                     ImageSetProcessor._process_single_image_static,
                     img,
                     thumb_320_dir,
                     thumb_1024_dir
-                )
+                ): img
                 for img in images
-            ]
+            }
             
             # Wrap concurrent futures as asyncio futures
             loop = asyncio.get_event_loop()
-            async_futures = [asyncio.wrap_future(f, loop=loop) for f in futures]
+            async_futures = {asyncio.wrap_future(f, loop=loop): img for f, img in futures.items()}
             
             # Process results as they complete, with progress updates
             batch_size = max(1, max_workers // 2)  # Update progress every N completions
             completed = 0
             
-            for future in asyncio.as_completed(async_futures):
+            for future, image_path in async_futures.items():
                 try:
-                    result = await future
+                    success, phash_result, avg_color_result = await future
                     completed += 1
+                    
+                    # Store perceptual features if calculated
+                    if success and (phash_result or avg_color_result):
+                        perceptual_features[image_path] = (phash_result, avg_color_result)
                     
                     # Update progress periodically
                     if progress_callback and (completed % batch_size == 0 or completed == total_images):
@@ -368,6 +415,9 @@ class ImageSetProcessor:
                     completed += 1
         
         logger.info(f"Thumbnail generation complete: {completed}/{total_images} images processed")
+        
+        # Return perceptual features for use in _process_set_images
+        return perceptual_features
     
     async def _generate_grid_preview(
         self,
@@ -431,8 +481,19 @@ class ImageSetProcessor:
                         100
                     )
                 
-                # Analyze image
-                tech_data = await self._analyzer.analyze_photo_async(image_path)
+                # Get pre-calculated perceptual features if available (from thumbnail generation)
+                phash_val = None
+                avg_color_val = None
+                if perceptual_features and image_path in perceptual_features:
+                    phash_val, avg_color_val = perceptual_features[image_path]
+                    logger.debug(f"Using pre-calculated perceptual features for {image_path.name}")
+                
+                # Analyze image (pass pre-calculated values to avoid recalculation)
+                tech_data = await self._analyzer.analyze_photo_async(
+                    image_path,
+                    phash=phash_val,
+                    avg_color_lab=avg_color_val
+                )
                 
                 # Generate source_id for this image
                 image_source_id = generate_id()

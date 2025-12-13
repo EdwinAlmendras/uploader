@@ -288,19 +288,48 @@ class FolderUploadProcess:
         """Internal method that runs the upload process."""
         try:
             # Create progress callback that emits events (sync wrapper for async operations)
-            def progress_callback(message: str, completed: int, total: int):
+            def progress_callback(message_or_progress, completed: int = None, total: int = None):
+                """
+                Progress callback that handles both formats:
+                1. (message: str, completed: int, total: int) - from folder upload
+                2. (progress: object) - from MegaClient upload
+                """
                 if self._cancelled:
                     return
+                
+                # Handle MegaClient progress format (single argument with progress object)
+                if completed is None and total is None:
+                    # Assume it's a progress object from MegaClient
+                    try:
+                        # Try to extract progress info from the object
+                        if hasattr(message_or_progress, 'uploaded_bytes') and hasattr(message_or_progress, 'total_bytes'):
+                            completed = message_or_progress.uploaded_bytes
+                            total = message_or_progress.total_bytes
+                            message = f"Uploading: {completed}/{total} bytes"
+                        elif hasattr(message_or_progress, 'percent'):
+                            # If it has percent, we can't determine total, so skip
+                            return
+                        else:
+                            # Unknown format, skip
+                            return
+                    except Exception:
+                        # If we can't parse it, skip
+                        return
+                else:
+                    # Standard format: (message, completed, total)
+                    message = message_or_progress
                 
                 # Schedule async operations without blocking
                 async def update_progress():
                     async with self._stats_lock:
-                        self._stats["total_files"] = total
+                        if total is not None:
+                            self._stats["total_files"] = total
                         # Update stats based on message
-                        if "Uploaded:" in message or "Completed:" in message:
-                            self._stats["uploaded"] = completed
-                        elif "Failed:" in message:
-                            self._stats["failed"] = completed
+                        if completed is not None:
+                            if "Uploaded:" in message or "Completed:" in message:
+                                self._stats["uploaded"] = completed
+                            elif "Failed:" in message:
+                                self._stats["failed"] = completed
                     
                     await self._events.emit("progress", self.stats)
                 

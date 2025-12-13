@@ -4,7 +4,7 @@ Analyzer Service - Single Responsibility: analyze media files.
 Uses mediakit for video/photo analysis.
 """
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional, List
 import asyncio
 
 from ..protocols import IAnalyzer
@@ -42,9 +42,21 @@ class AnalyzerService(IAnalyzer):
         """Analyze video file."""
         return analyze_video(path)
     
-    def analyze_photo(self, path: Path) -> Dict[str, Any]:
-        """Analyze photo file."""
-        return analyze_photo(path)
+    def analyze_photo(
+        self, 
+        path: Path, 
+        phash: Optional[str] = None,
+        avg_color_lab: Optional[List[float]] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze photo file.
+        
+        Args:
+            path: Path to image file
+            phash: Pre-calculated pHash (optional)
+            avg_color_lab: Pre-calculated avg_color_lab (optional)
+        """
+        return analyze_photo(path, phash=phash, avg_color_lab=avg_color_lab)
     
     async def analyze_async(self, path: Path) -> Dict[str, Any]:
         """Analyze media file asynchronously."""
@@ -62,10 +74,28 @@ class AnalyzerService(IAnalyzer):
         tech_data["blake3_hash"] = await blake3_file(path)
         return tech_data
     
-    async def analyze_photo_async(self, path: Path) -> Dict[str, Any]:
-        """Analyze photo file asynchronously."""
+    async def analyze_photo_async(
+        self, 
+        path: Path,
+        phash: Optional[str] = None,
+        avg_color_lab: Optional[List[float]] = None
+    ) -> Dict[str, Any]:
+        """
+        Analyze photo file asynchronously.
+        
+        Args:
+            path: Path to image file
+            phash: Pre-calculated pHash (optional)
+            avg_color_lab: Pre-calculated avg_color_lab (optional)
+        """
         loop = asyncio.get_event_loop()
-        tech_data = await loop.run_in_executor(None, self.analyze_photo, path)
+        tech_data = await loop.run_in_executor(
+            None, 
+            self.analyze_photo, 
+            path, 
+            phash, 
+            avg_color_lab
+        )
         # Add blake3_hash
         tech_data["blake3_hash"] = await blake3_file(path)
         return tech_data

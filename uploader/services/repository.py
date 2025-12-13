@@ -102,10 +102,10 @@ class MetadataRepository(IMetadataRepository):
         
         Args:
             document_id: Reference to document
-            data: Photo metadata from analyzer
+            data: Photo metadata from analyzer (may include image_embedding)
         """
         exif_data = data.get("tags") or data.get("exif") or {}
-        await self._api.post("/photos", json={
+        payload = {
             "document_id": document_id,
             "width": data.get("width"),
             "height": data.get("height"),
@@ -113,7 +113,22 @@ class MetadataRepository(IMetadataRepository):
             "orientation": data.get("orientation"),
             "creation_date": self._to_iso(data.get("creation_date")),
             "exif": self._sanitize_dict(exif_data) if exif_data else {},
-        })
+        }
+        
+        # Include image embedding if available (normalized vector from CLIP)
+        if "image_embedding" in data:
+            embedding = data["image_embedding"]
+            # Ensure it's a list (should already be normalized from mediakit)
+            if isinstance(embedding, (list, tuple)):
+                payload["image_embedding"] = list(embedding)
+            else:
+                # If it's numpy array or other, convert to list
+                try:
+                    payload["image_embedding"] = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+                except Exception:
+                    pass  # Skip if can't convert
+        
+        await self._api.post("/photos", json=payload)
     
     async def save_video_metadata(self, document_id: str, data: Dict[str, Any]) -> None:
         """
@@ -400,15 +415,31 @@ class MetadataRepository(IMetadataRepository):
     def prepare_photo_metadata(self, document_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """Prepare photo metadata dict for batch."""
         exif_data = data.get("tags") or data.get("exif") or {}
-        return {
+        payload = {
             "document_id": document_id,
             "width": data.get("width"),
             "height": data.get("height"),
             "camera": data.get("camera"),
             "orientation": data.get("orientation"),
             "creation_date": self._to_iso(data.get("creation_date")),
+            "quality": data.get("quality"),  # JPEG quality estimate (1-100) or None
+            "phash": data.get("phash"),  # Perceptual hash for near-duplicate detection
+            "avg_color_lab": data.get("avg_color_lab"),  # Average color in LAB space [L, a, b]
             "exif": self._sanitize_dict(exif_data) if exif_data else {},
         }
+        
+        # Include image embedding if available
+        if "image_embedding" in data:
+            embedding = data["image_embedding"]
+            if isinstance(embedding, (list, tuple)):
+                payload["image_embedding"] = list(embedding)
+            else:
+                try:
+                    payload["image_embedding"] = embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding)
+                except Exception:
+                    pass
+        
+        return payload
 
 
 class HTTPAPIClient:
