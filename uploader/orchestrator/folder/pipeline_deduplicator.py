@@ -20,6 +20,15 @@ from uploader.services.storage import StorageService
 from uploader.services.managed_storage import ManagedStorageService
 from uploader.services.resume import blake3_file
 
+# Import for video detection
+try:
+    from mediakit import is_video
+except ImportError:
+    def is_video(path):
+        """Fallback if mediakit not available."""
+        video_exts = {'.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv', '.m4v', '.mpg', '.mpeg'}
+        return Path(path).suffix.lower() in video_exts
+
 logger = logging.getLogger(__name__)
 
 
@@ -60,11 +69,15 @@ class PipelineDeduplicator:
         repository: MetadataRepository,
         storage: StorageService,
         hash_cache: Optional['HashCache'] = None,
+        preview_handler=None,
+        analyzer=None,
     ):
         self._repository = repository
         self._storage = storage
         self._manager = storage.manager if isinstance(storage, ManagedStorageService) else None
         self._hash_cache = hash_cache
+        self._preview_handler = preview_handler
+        self._analyzer = analyzer
         
         # Queues for pipeline
         self._hash_queue: asyncio.Queue[Optional[Tuple[Path, Path]]] = asyncio.Queue()
@@ -326,6 +339,11 @@ class PipelineDeduplicator:
                     "PipelineDeduplicator: ✓ '%s' exists in DB and MEGA - SKIP",
                     result.file_path.name
                 )
+                
+                # Check and regenerate preview if missing (for videos only)
+                if is_video(result.file_path) and self._preview_handler and self._analyzer:
+                    await self._check_and_regenerate_preview(result.file_path, source_id)
+                
             elif exists_in_db and not exists_in_mega:
                 # Exists in DB but not MEGA - re-upload
                 self._pending_files.append((result.file_path, result.rel_path))
@@ -340,3 +358,115 @@ class PipelineDeduplicator:
                     "PipelineDeduplicator: '%s' is NEW - WILL UPLOAD",
                     result.file_path.name
                 )
+    
+    async def _check_and_regenerate_preview(self, file_path: Path, source_id: str):
+        """
+        Check if preview exists for a video and regenerate if missing.
+        
+        Uses the real MEGA path of the video (obtained via source_id) to determine
+        where the preview should be.
+        
+        Args:
+            file_path: Local path to the video file
+            source_id: Source ID (mega_id) of the video in MEGA
+        """
+        try:
+            # Get the actual node from MEGA using source_id
+            node_info = None
+            if self._manager:
+                node_info = await self._manager.find_by_mega_id(source_id)
+            else:
+                # For single storage, we need to get the node
+                # This is a limitation - single storage doesn't have find_by_mega_id
+                logger.debug(
+                    "PipelineDeduplicator: Cannot check preview for '%s' - single storage mode",
+                    file_path.name
+                )
+                return
+            
+            if not node_info:
+                logger.warning(
+                    "PipelineDeduplicator: Video node not found in MEGA for '%s' (source_id: %s)",
+                    file_path.name, source_id
+                )
+                return
+            
+            node, client = node_info
+            
+            # Get the full path of the video in MEGA
+            try:
+                video_path = await client.get_node_path(node)
+            except Exception as e:
+                logger.warning(
+                    "PipelineDeduplicator: Could not get path for node '%s': %s",
+                    source_id, e
+                )
+                return
+            
+            # Construct preview path by changing extension to .jpg
+            preview_path = video_path.rsplit('.', 1)[0] + '.jpg'
+            
+            logger.debug(
+                "PipelineDeduplicator: Checking preview for '%s' at '%s'",
+                file_path.name, preview_path
+            )
+            
+            # Check if preview exists
+            preview_exists = await self._storage.exists(preview_path)
+            
+            if preview_exists:
+                logger.debug(
+                    "PipelineDeduplicator: ✓ Preview exists for '%s'",
+                    file_path.name
+                )
+            else:
+                logger.info(
+                    "PipelineDeduplicator: ✗ Preview missing for '%s' - REGENERATING",
+                    file_path.name
+                )
+                
+                # Analyze video to get duration
+                tech_data = await self._analyzer.analyze_video_async(file_path)
+                duration = tech_data.get('duration', 0)
+                
+                if duration > 0:
+                    # Extract dest_path and filename from video_path
+                    # video_path example: "Videos/Lisa/video.mp4"
+                    path_parts = video_path.rsplit('/', 1)
+                    if len(path_parts) == 2:
+                        dest_path, video_filename = path_parts
+                    else:
+                        dest_path = None
+                        video_filename = path_parts[0]
+                    
+                    # Regenerate and upload preview
+                    preview_handle = await self._preview_handler.upload_preview(
+                        file_path,
+                        source_id,
+                        duration,
+                        dest_path=dest_path,
+                        filename=video_filename
+                    )
+                    
+                    if preview_handle:
+                        logger.info(
+                            "PipelineDeduplicator: ✓ Preview regenerated for '%s'",
+                            file_path.name
+                        )
+                    else:
+                        logger.warning(
+                            "PipelineDeduplicator: Failed to regenerate preview for '%s'",
+                            file_path.name
+                        )
+                else:
+                    logger.warning(
+                        "PipelineDeduplicator: Invalid duration for '%s' - skipping preview",
+                        file_path.name
+                    )
+                    
+        except Exception as e:
+            logger.error(
+                "PipelineDeduplicator: Error checking/regenerating preview for '%s': %s",
+                file_path.name, e,
+                exc_info=True
+            )

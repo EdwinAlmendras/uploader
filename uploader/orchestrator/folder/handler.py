@@ -278,7 +278,9 @@ class FolderUploadHandler:
                     pipeline = PipelineDeduplicator(
                         self._repository,
                         self._storage,
-                        hash_cache=self._hash_cache
+                        hash_cache=self._hash_cache,
+                        preview_handler=self._preview_handler if self._preview_checker else None,
+                        analyzer=self._analyzer if self._preview_checker else None,
                     )
                     
                     # Setup callbacks for hash progress
@@ -378,14 +380,17 @@ class FolderUploadHandler:
                 )
                 
                 # Step 2.3: Check and regenerate missing previews for existing files
-                previews_regenerated = 0
-                if existing_files_with_source_id and self._preview_checker:
-                    logger.info("Checking and regenerating missing previews for existing files")
-                    previews_regenerated = await self._preview_checker.check_and_regenerate(
-                        existing_files_with_source_id, dest_path, relative_to=folder_path, progress_callback=progress_callback
-                    )
-                    if previews_regenerated > 0:
-                        logger.info(f"Regenerated {previews_regenerated} missing previews")
+                # NOTE: This is now handled automatically in the pipeline during deduplication
+                # (see PipelineDeduplicator._check_and_regenerate_preview)
+                # Keeping this code commented for reference in case we need fallback
+                # previews_regenerated = 0
+                # if existing_files_with_source_id and self._preview_checker:
+                #     logger.info("Checking and regenerating missing previews for existing files")
+                #     previews_regenerated = await self._preview_checker.check_and_regenerate(
+                #         existing_files_with_source_id, dest_path, relative_to=folder_path, progress_callback=progress_callback
+                #     )
+                #     if previews_regenerated > 0:
+                #         logger.info(f"Regenerated {previews_regenerated} missing previews")
                 
                 if process:
                     async with process._stats_lock:
