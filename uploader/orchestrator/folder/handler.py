@@ -258,9 +258,9 @@ class FolderUploadHandler:
                                 file_path.name
                             )
                     
-                    if process:
-                        await process.complete_phase("syncing", f"Synced {synced_count} files")
-                
+                if process:
+                    await process.complete_phase("syncing", f"Synced {synced_count} files")
+            
                 if synced_count > 0:
                     logger.info(f"Synchronized {synced_count} file(s) from MEGA to DB")
                 
