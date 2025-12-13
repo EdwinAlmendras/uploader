@@ -42,6 +42,7 @@ class FolderUploadHandler:
             config: UploadConfig
         """
         self._file_collector = FileCollector()
+        self._preview_handler = preview_handler
         self._file_processor = FileProcessor(analyzer, repository, storage, preview_handler, config)
         self._set_processor = ImageSetProcessor(analyzer, repository, storage, config)
         self._existence_checker = FileExistenceChecker(storage)
@@ -276,7 +277,7 @@ class FolderUploadHandler:
                         self._repository,
                         self._storage,
                         hash_cache=self._hash_cache,
-                        preview_handler=self._preview_handler if self._preview_checker else None,
+                        preview_handler=self._preview_handler,
                         analyzer=self._analyzer if self._preview_checker else None,
                     )
                     
