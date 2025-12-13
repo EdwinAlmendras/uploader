@@ -138,7 +138,7 @@ class PipelineDeduplicator:
             self._on_progress = progress_callback
         
         total = len(files)
-        logger.info("Starting pipeline for %d files", total)
+        logger.info("PipelineDeduplicator: Starting pipeline for %d files", total)
         
         # Reset state
         self._pending_files = []
@@ -168,7 +168,7 @@ class PipelineDeduplicator:
         await asyncio.gather(hash_task, check_task)
         
         logger.info(
-            "Completed - %d pending, %d skipped",
+            "PipelineDeduplicator: Completed - %d pending, %d skipped",
             len(self._pending_files), len(self._skipped_paths)
         )
         
@@ -208,7 +208,7 @@ class PipelineDeduplicator:
                     blake3_hash = cached_hash
                     from_cache = True
                     logger.debug(
-                        "Hash from cache for '%s': %s...",
+                        "PipelineDeduplicator: Hash from cache for '%s': %s...",
                         file_path.name, blake3_hash[:16]
                     )
             
@@ -217,7 +217,7 @@ class PipelineDeduplicator:
                 try:
                     blake3_hash = await blake3_file(file_path)
                     logger.debug(
-                        "Calculated hash for '%s': %s...",
+                        "PipelineDeduplicator: Calculated hash for '%s': %s...",
                         file_path.name, blake3_hash[:16]
                     )
                     
@@ -227,7 +227,7 @@ class PipelineDeduplicator:
                         
                 except Exception as e:
                     logger.error(
-                        "Hash failed for '%s': %s",
+                        "PipelineDeduplicator: Hash failed for '%s': %s",
                         file_path.name, e
                     )
                     blake3_hash = None
@@ -297,12 +297,12 @@ class PipelineDeduplicator:
                         source_id = doc_info
                     
                     logger.debug(
-                        "'%s' exists in DB (source_id: %s)",
+                        "PipelineDeduplicator: '%s' exists in DB (source_id: %s)",
                         result.file_path.name, source_id
                     )
             except Exception as e:
                 logger.warning(
-                    "DB check failed for '%s': %s",
+                    "PipelineDeduplicator: DB check failed for '%s': %s",
                     result.file_path.name, e
                 )
             
@@ -316,7 +316,7 @@ class PipelineDeduplicator:
                         exists_in_mega = await self._storage.exists_by_mega_id(source_id)
                 except Exception as e:
                     logger.warning(
-                        "MEGA check failed for '%s': %s",
+                        "PipelineDeduplicator: MEGA check failed for '%s': %s",
                         result.file_path.name, e
                     )
             
@@ -336,7 +336,7 @@ class PipelineDeduplicator:
                 self._skipped_paths.add(result.file_path)
                 self._path_to_source_id[result.file_path] = source_id
                 logger.debug(
-                    "✓ '%s' exists in DB and MEGA - SKIP",
+                    "PipelineDeduplicator: ✓ '%s' exists in DB and MEGA - SKIP",
                     result.file_path.name
                 )
                 
@@ -348,14 +348,14 @@ class PipelineDeduplicator:
                 # Exists in DB but not MEGA - re-upload
                 self._pending_files.append((result.file_path, result.rel_path))
                 logger.info(
-                    "'%s' in DB but not MEGA - WILL RE-UPLOAD",
+                    "PipelineDeduplicator: '%s' in DB but not MEGA - WILL RE-UPLOAD",
                     result.file_path.name
                 )
             else:
                 # New file - upload
                 self._pending_files.append((result.file_path, result.rel_path))
                 logger.debug(
-                    "'%s' is NEW - WILL UPLOAD",
+                    "PipelineDeduplicator: '%s' is NEW - WILL UPLOAD",
                     result.file_path.name
                 )
     
@@ -379,27 +379,28 @@ class PipelineDeduplicator:
                 # For single storage, we need to get the node
                 # This is a limitation - single storage doesn't have find_by_mega_id
                 logger.debug(
-                    "Cannot check preview for '%s' - single storage mode",
+                    "PipelineDeduplicator: Cannot check preview for '%s' - single storage mode",
                     file_path.name
                 )
                 return
             
             if not node_info:
                 logger.warning(
-                    "Video node not found in MEGA for '%s' (source_id: %s)",
+                    "PipelineDeduplicator: Video node not found in MEGA for '%s' (source_id: %s)",
                     file_path.name, source_id
                 )
                 return
             
-            _, node = node_info
+            node, client = node_info
             
+            # Get the full path of the video in MEGA (node.path is a property)
             video_path = node.path
             
             # Construct preview path by changing extension to .jpg
             preview_path = video_path.rsplit('.', 1)[0] + '.jpg'
             
             logger.debug(
-                "Checking preview for '%s' at '%s'",
+                "PipelineDeduplicator: Checking preview for '%s' at '%s'",
                 file_path.name, preview_path
             )
             
@@ -408,12 +409,12 @@ class PipelineDeduplicator:
             
             if preview_exists:
                 logger.debug(
-                    "✓ Preview exists for '%s'",
+                    "PipelineDeduplicator: ✓ Preview exists for '%s'",
                     file_path.name
                 )
             else:
                 logger.info(
-                    "✗ Preview missing for '%s' - REGENERATING",
+                    "PipelineDeduplicator: ✗ Preview missing for '%s' - REGENERATING",
                     file_path.name
                 )
                 
@@ -442,23 +443,23 @@ class PipelineDeduplicator:
                     
                     if preview_handle:
                         logger.info(
-                            "✓ Preview regenerated for '%s'",
+                            "PipelineDeduplicator: ✓ Preview regenerated for '%s'",
                             file_path.name
                         )
                     else:
                         logger.warning(
-                            "Failed to regenerate preview for '%s'",
+                            "PipelineDeduplicator: Failed to regenerate preview for '%s'",
                             file_path.name
                         )
                 else:
                     logger.warning(
-                        "Invalid duration for '%s' - skipping preview",
+                        "PipelineDeduplicator: Invalid duration for '%s' - skipping preview",
                         file_path.name
                     )
                     
         except Exception as e:
             logger.error(
-                "Error checking/regenerating preview for '%s': %s",
+                "PipelineDeduplicator: Error checking/regenerating preview for '%s': %s",
                 file_path.name, e,
                 exc_info=True
             )

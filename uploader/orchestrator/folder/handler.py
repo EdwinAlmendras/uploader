@@ -258,9 +258,9 @@ class FolderUploadHandler:
                                 file_path.name
                             )
                     
-                if process:
-                    await process.complete_phase("syncing", f"Synced {synced_count} files")
-            
+                    if process:
+                        await process.complete_phase("syncing", f"Synced {synced_count} files")
+                
                 if synced_count > 0:
                     logger.info(f"Synchronized {synced_count} file(s) from MEGA to DB")
                 
@@ -361,8 +361,8 @@ class FolderUploadHandler:
                             "After blake3_hash check: %d files skipped (in database), %d files remaining to upload",
                             skipped_hash, len(files_to_check_db) - skipped_hash
                     )
-                    else:
-                            logger.debug("After blake3_hash check: All %d files are new (not in database)", len(files_to_check_db))
+                else:
+                        logger.debug("After blake3_hash check: All %d files are new (not in database)", len(files_to_check_db))
                 else:
                     # No deduplicator available, use files from MEGA check
                     pending_files = pending_after_mega

@@ -97,7 +97,7 @@ class StorageService:
             True if exists, False otherwise
         """
         node = await self.get_node(path)
-        return node is not None
+            return node is not None
     
     async def exists_by_mega_id(self, mega_id: str) -> bool:
         """
