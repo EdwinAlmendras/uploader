@@ -313,6 +313,25 @@ class MetadataRepository(IMetadataRepository):
         except Exception:
             return {}
     
+    async def exists_by_source_id(self, source_id: str) -> bool:
+        """
+        Check if document exists by source_id.
+        
+        Args:
+            source_id: Source ID (mega_id) to check
+            
+        Returns:
+            True if document exists, False otherwise
+        """
+        if not source_id:
+            return False
+        
+        try:
+            response = await self._api.get(f"/documents/{source_id}")
+            return response.status_code == 200
+        except Exception:
+            return False
+    
     # =========================================================================
     # Batch Operations
     # =========================================================================

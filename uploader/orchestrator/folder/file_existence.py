@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Optional, Callable, Tuple, Set, Dict
+from dataclasses import dataclass
 from uploader.services import StorageService
 from uploader.services.managed_storage import ManagedStorageService
 from uploader.services.repository import MetadataRepository
@@ -12,6 +13,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass
+class MegaFileInfo:
+    """Information about a file found in MEGA."""
+    source_id: Optional[str]  # mega_id from attribute 'm'
+    mega_handle: Optional[str]  # MEGA node handle
+    node: Optional[Any]  # MEGA node object
+
 class FileExistenceChecker:
     """Checks which files already exist in MEGA by path."""
 
@@ -19,17 +28,22 @@ class FileExistenceChecker:
         self._storage = storage
 
     async def check(self, all_files: list[Path], folder_path: Path, dest_path: str,
-                   total: int, progress_callback: Optional[Callable]) -> Tuple[list[Tuple[Path, Path]], int]:
+                   total: int, progress_callback: Optional[Callable]) -> Tuple[list[Tuple[Path, Path]], int, Dict[Path, MegaFileInfo]]:
         """
         Check which files already exist in MEGA by path.
         
-        Returns pending files and skipped count.
+        Returns:
+            Tuple of (pending_files, skipped_count, mega_files_info)
+            - pending_files: List of (file_path, rel_path) for files not in MEGA
+            - skipped_count: Number of files found in MEGA
+            - mega_files_info: Dict mapping file_path -> MegaFileInfo for files found in MEGA
         """
         if progress_callback:
             progress_callback("Checking existing files in MEGA...", 0, total)
 
         pending_files = []
         skipped = 0
+        mega_files_info: Dict[Path, MegaFileInfo] = {}
 
         logger.debug(
             "FileExistenceChecker: Starting MEGA path check for %d files (dest_path: '%s')",
@@ -51,11 +65,24 @@ class FileExistenceChecker:
                 idx+1, total, file_path.name, target_path
             )
 
-            exists = await self._storage.exists(target_path)
-            if exists:
+            # Get node instead of just checking existence
+            node = await self._storage.get_node(target_path)
+            if node:
+                # Extract mega_id from node attributes
+                source_id = None
+                if node.attributes and hasattr(node.attributes, 'mega_id'):
+                    source_id = node.attributes.mega_id
+                
+                mega_info = MegaFileInfo(
+                    source_id=source_id,
+                    mega_handle=node.handle,
+                    node=node
+                )
+                mega_files_info[file_path] = mega_info
+                
                 logger.debug(
-                    "FileExistenceChecker: ✓ File already exists in MEGA - '%s' at '%s' - WILL SKIP",
-                    file_path.name, target_path
+                    "FileExistenceChecker: ✓ File already exists in MEGA - '%s' at '%s' (source_id: %s) - WILL SKIP",
+                    file_path.name, target_path, source_id or "none"
                 )
                 skipped += 1
             else:
@@ -76,7 +103,7 @@ class FileExistenceChecker:
         else:
             logger.info("FileExistenceChecker: No files found in MEGA, all %d files will be checked in database", total)
 
-        return pending_files, skipped
+        return pending_files, skipped, mega_files_info
 
 
 class Blake3Deduplicator:
@@ -181,14 +208,14 @@ class Blake3Deduplicator:
             
             # Verify file exists in MEGA by searching for mega_id (attribute 'm')
             # Use AccountManager if available (searches all accounts), otherwise use storage (single account)
-            file_exists_in_mega = True
+            file_exists_in_mega = False
             if source_id:
                 # Use manager to search in all accounts if available
-                """ if self._manager:
+                if self._manager:
                     file_exists_in_mega = await self._manager.find_by_mega_id(source_id) is not None
                 else:
                     # Fallback to storage (single account)
-                    file_exists_in_mega = await self._storage.exists_by_mega_id(source_id) """
+                    file_exists_in_mega = await self._storage.exists_by_mega_id(source_id)
                 
                 if not file_exists_in_mega:
                     logger.info(
@@ -301,7 +328,8 @@ class PreviewChecker:
         for idx, (file_path, source_id) in enumerate(video_files.items()):
             # For existing files, we don't have dest_path, so use backward compatibility
             # Check preview in old location: /.previews/{source_id}.jpg
-            
+            print(file_path)
+            print(relative_to)
             relative_path = file_path.relative_to(relative_to)
             
             preview_path = f"{dest_path}/{relative_path.with_suffix('.jpg')}"
@@ -372,4 +400,92 @@ class PreviewChecker:
             logger.debug("PreviewChecker: All previews exist, nothing to regenerate")
 
         return regenerated
+
+
+class MegaToDbSynchronizer:
+    """Synchronizes files from MEGA to database (when file exists in MEGA but not in DB)."""
+
+    def __init__(
+        self,
+        analyzer: AnalyzerService,
+        repository: MetadataRepository,
+        storage: StorageService
+    ):
+        self._analyzer = analyzer
+        self._repository = repository
+        self._storage = storage
+
+    async def sync_file(
+        self,
+        file_path: Path,
+        mega_info: MegaFileInfo,
+        dest_path: str
+    ) -> Optional[str]:
+        """
+        Synchronize file from MEGA to DB.
+        
+        Analyzes local file and saves metadata to DB using the existing source_id (mega_id).
+        
+        Args:
+            file_path: Path to local file
+            mega_info: MegaFileInfo with source_id and node information
+            dest_path: Destination path in MEGA (for logging)
+            
+        Returns:
+            source_id used (mega_id from MEGA) or None on failure
+        """
+        if not mega_info.source_id:
+            logger.warning(
+                "MegaToDbSynchronizer: File '%s' in MEGA has no mega_id (source_id) - cannot sync to DB",
+                file_path.name
+            )
+            return None
+        
+        source_id = mega_info.source_id
+        logger.info(
+            "MegaToDbSynchronizer: Syncing file '%s' from MEGA to DB (source_id: %s)",
+            file_path.name, source_id
+        )
+        
+        try:
+            # Analyze file
+            from mediakit import is_video, is_image
+            
+            if is_video(file_path):
+                tech_data = await self._analyzer.analyze_video_async(file_path)
+            elif is_image(file_path):
+                tech_data = await self._analyzer.analyze_photo_async(file_path)
+            else:
+                logger.warning(
+                    "MegaToDbSynchronizer: Unknown file type for '%s' - skipping sync",
+                    file_path.name
+                )
+                return None
+            
+            # Replace source_id from analysis with the existing mega_id
+            tech_data["source_id"] = source_id
+            
+            # Save to database
+            await self._repository.save_document(tech_data)
+            
+            # Save type-specific metadata
+            if is_video(file_path):
+                await self._repository.save_video_metadata(source_id, tech_data)
+            elif is_image(file_path):
+                await self._repository.save_photo_metadata(source_id, tech_data)
+            
+            logger.info(
+                "MegaToDbSynchronizer: ✓ Successfully synced '%s' to DB (source_id: %s)",
+                file_path.name, source_id
+            )
+            
+            return source_id
+            
+        except Exception as e:
+            logger.error(
+                "MegaToDbSynchronizer: Error syncing '%s' to DB: %s",
+                file_path.name, e,
+                exc_info=True
+            )
+            return None
 

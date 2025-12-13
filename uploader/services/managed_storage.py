@@ -406,6 +406,31 @@ class ManagedStorageService:
         
         return node.handle if node else None
     
+    async def get_node(self, path: str):
+        """
+        Get node from MEGA by path across ALL accounts.
+        
+        Args:
+            path: Full path to check (e.g., "/Folder/file.mp4")
+            
+        Returns:
+            Node if exists in any account, None otherwise
+        """
+        try:
+            # Normalize path - ensure it starts with /
+            if not path.startswith("/"):
+                path = f"/{path}"
+            # Use AccountManager.find_in_accounts() which searches all accounts
+            result = await self._manager.find_in_accounts(path)
+            if result:
+                # find_in_accounts returns (node, account_name) or None
+                node, _ = result
+                return node
+            return None
+        except Exception as e:
+            logger.debug(f"Error getting node for {path}: {e}")
+            return None
+    
     async def exists(self, path: str) -> bool:
         """
         Check if file/folder exists in MEGA across ALL accounts.
@@ -416,18 +441,8 @@ class ManagedStorageService:
         Returns:
             True if exists in any account, False otherwise
         """
-        try:
-            # Normalize path - ensure it starts with /
-            if not path.startswith("/"):
-                path = f"/{path}"
-            # Use AccountManager.exists() which searches all accounts
-            exists = await self._manager.exists(path)
-            if exists:
-                logger.debug(f"File exists in MEGA: {path}")
-            return exists
-        except Exception as e:
-            logger.debug(f"Error checking if file exists {path}: {e}")
-            return False
+        node = await self.get_node(path)
+        return node is not None
     
     async def exists_by_mega_id(self, mega_id: str) -> bool:
         """

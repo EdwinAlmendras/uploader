@@ -53,8 +53,6 @@ class ImageSetProcessor:
         self._selector = ImageSelector()
         self._preview_generator = ImagePreviewGenerator(cell_size=400)
         
-        # Custom resize config for 320px and 1024px thumbnails
-        # We'll use SetResizer directly with custom sizes (though we'll do custom resize)
         self._resizer = SetResizer(ResizeConfig(qualities=[ResizeQuality.SMALL]))
         self._archiver = SevenZipArchiver(ArchiveConfig(compression_level=0, output_dir=None))
     
