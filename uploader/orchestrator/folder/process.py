@@ -141,6 +141,10 @@ class FolderUploadProcess:
         """Called when MEGA→DB sync completes. Receives (filename, success)."""
         self._events.on("sync_complete", callback)
     
+    def on_check_complete(self, callback: Callable[[str, bool, bool], None]):
+        """Called when DB/MEGA check completes. Receives (filename, exists_in_db, exists_in_mega)."""
+        self._events.on("check_complete", callback)
+    
     # Control methods
     async def start(self):
         """Start the upload process (non-blocking)."""

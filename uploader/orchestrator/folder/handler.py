@@ -299,6 +299,11 @@ class FolderUploadHandler:
                                 hash_count[0], len(files_to_check_db), filename, from_cache
                             )
                         
+                        async def on_check_complete(filename, exists_in_db, exists_in_mega):
+                            """Called when DB/MEGA check completes for a file."""
+                            # Emit event through process for progress display
+                            await process._events.emit("check_complete", filename, exists_in_db, exists_in_mega)
+                        
                         # Set callbacks (wrapping async functions)
                         def sync_hash_start(filename):
                             import asyncio
@@ -316,8 +321,17 @@ class FolderUploadHandler:
                             except RuntimeError:
                                 pass
                         
+                        def sync_check_complete(filename, exists_in_db, exists_in_mega):
+                            import asyncio
+                            try:
+                                loop = asyncio.get_running_loop()
+                                loop.create_task(on_check_complete(filename, exists_in_db, exists_in_mega))
+                            except RuntimeError:
+                                pass
+                        
                         pipeline.on_hash_start(sync_hash_start)
                         pipeline.on_hash_complete(sync_hash_complete)
+                        pipeline.on_check_complete(sync_check_complete)
                     
                     # Process files through pipeline
                     files_with_rel = [(fp, fp.relative_to(folder_path)) for fp in files_to_check_db]

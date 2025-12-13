@@ -326,22 +326,26 @@ class PreviewChecker:
 
         regenerated = 0
         for idx, (file_path, source_id) in enumerate(video_files.items()):
-            # For existing files, we don't have dest_path, so use backward compatibility
-            # Check preview in old location: /.previews/{source_id}.jpg
-            print(file_path)
-            print(relative_to)
+            # Calculate paths for preview check and upload
             relative_path = file_path.relative_to(relative_to)
             
-            preview_path = f"{dest_path}/{relative_path.with_suffix('.jpg')}"
+            # Calculate preview destination path (including subdirectories)
+            preview_dest = dest_path
+            if relative_path.parent != Path("."):
+                preview_dest = f"{dest_path}/{relative_path.parent.as_posix()}"
             
-            print(preview_path)
+            # Preview filename (same as video, but .jpg)
+            preview_filename = f"{file_path.stem}.jpg"
+            
+            # Full preview path for checking existence
+            preview_path = f"{preview_dest}/{preview_filename}"
             
             logger.debug(
-                "PreviewChecker: [%d/%d] Checking preview for '%s' (source_id: %s)",
-                idx + 1, total, file_path.name, source_id
+                "PreviewChecker: [%d/%d] Checking preview for '%s' at '%s' (source_id: %s)",
+                idx + 1, total, file_path.name, preview_path, source_id
             )
 
-            # Check if preview exists in MEGA (backward compatibility location)
+            # Check if preview exists in MEGA
             preview_exists = await self._storage.exists(preview_path)
             
             if preview_exists:
@@ -361,12 +365,13 @@ class PreviewChecker:
                     duration = tech_data.get('duration', 0)
                     
                     if duration > 0:
-                        # Regenerate and upload preview
-                        # Note: For existing files, we don't have dest_path, so use backward compatibility
-                        # Preview will be uploaded using source_id (old behavior)
+                        # Regenerate and upload preview to correct location
                         preview_handle = await self._preview_handler.upload_preview(
-                            file_path, source_id, duration
-                            # dest_path and filename not provided - will use backward compatibility
+                            file_path, 
+                            source_id, 
+                            duration,
+                            dest_path=preview_dest,
+                            filename=file_path.name
                         )
                         if preview_handle:
                             logger.info(
