@@ -4,6 +4,7 @@ from .analyzer import AnalyzerService
 from .repository import MetadataRepository
 from .preview import PreviewService
 from .storage import StorageService
+from .hash_cache import HashCache, get_hash_cache
 
 # Optional: requires mega-account package
 try:
@@ -14,6 +15,8 @@ try:
         "PreviewService",
         "StorageService",
         "ManagedStorageService",
+        "HashCache",
+        "get_hash_cache",
     ]
 except ImportError:
     __all__ = [
@@ -21,4 +24,6 @@ except ImportError:
         "MetadataRepository", 
         "PreviewService",
         "StorageService",
+        "HashCache",
+        "get_hash_cache",
     ]

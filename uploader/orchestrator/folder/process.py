@@ -1,7 +1,7 @@
 from enum import Enum
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, TYPE_CHECKING
-from uploader.utils.events import EventEmitter, FileProgress
+from uploader.utils.events import EventEmitter, FileProgress, PhaseProgress, HashProgress
 from uploader.orchestrator.models import FolderUploadResult, UploadResult
 import asyncio
 import logging
@@ -10,6 +10,19 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .handler import FolderUploadHandler
+
+
+class ProcessPhase(Enum):
+    """Phase of upload process."""
+    DETECTING = "detecting"
+    CHECKING_MEGA = "checking_mega"
+    HASHING = "hashing"
+    CHECKING_DB = "checking_db"
+    SYNCING = "syncing"
+    CHECKING_SPACE = "checking_space"
+    UPLOADING = "uploading"
+    COMPLETED = "completed"
+
 
 class ProcessState(Enum):
     """State of upload process."""
@@ -57,10 +70,14 @@ class FolderUploadProcess:
             "uploaded": 0,
             "failed": 0,
             "skipped": 0,
+            "synced": 0,
             "current_file": None,
+            "current_phase": None,
+            "phase_progress": {},  # {phase: {current, total, message}}
             "file_progress": {}  # {filename: FileProgress}
         }
         self._stats_lock = asyncio.Lock()
+        self._current_phase: Optional[ProcessPhase] = None
     
     # Event subscription methods
     def on_start(self, callback: Callable[[], None]):
@@ -94,6 +111,35 @@ class FolderUploadProcess:
     def on_error(self, callback: Callable[[Exception], None]):
         """Called when a critical error occurs. Receives Exception."""
         self._events.on("error", callback)
+    
+    # Phase event subscription methods
+    def on_phase_start(self, callback: Callable[[str, str], None]):
+        """Called when a phase starts. Receives (phase_name, message)."""
+        self._events.on("phase_start", callback)
+    
+    def on_phase_progress(self, callback: Callable[[PhaseProgress], None]):
+        """Called when phase progress updates. Receives PhaseProgress."""
+        self._events.on("phase_progress", callback)
+    
+    def on_phase_complete(self, callback: Callable[[str, str], None]):
+        """Called when a phase completes. Receives (phase_name, message)."""
+        self._events.on("phase_complete", callback)
+    
+    def on_hash_start(self, callback: Callable[[str], None]):
+        """Called when hash calculation starts for a file. Receives filename."""
+        self._events.on("hash_start", callback)
+    
+    def on_hash_complete(self, callback: Callable[[HashProgress], None]):
+        """Called when hash calculation completes. Receives HashProgress."""
+        self._events.on("hash_complete", callback)
+    
+    def on_sync_start(self, callback: Callable[[str], None]):
+        """Called when MEGA→DB sync starts for a file. Receives filename."""
+        self._events.on("sync_start", callback)
+    
+    def on_sync_complete(self, callback: Callable[[str, bool], None]):
+        """Called when MEGA→DB sync completes. Receives (filename, success)."""
+        self._events.on("sync_complete", callback)
     
     # Control methods
     async def start(self):
@@ -172,6 +218,66 @@ class FolderUploadProcess:
     def is_cancelled(self) -> bool:
         """Check if process was cancelled."""
         return self._state == ProcessState.CANCELLED
+    
+    @property
+    def current_phase(self) -> Optional[ProcessPhase]:
+        """Current processing phase."""
+        return self._current_phase
+    
+    async def set_phase(self, phase: ProcessPhase, message: str = ""):
+        """Set current phase and emit phase_start event."""
+        self._current_phase = phase
+        async with self._stats_lock:
+            self._stats["current_phase"] = phase.value
+        await self._events.emit("phase_start", phase.value, message)
+    
+    async def emit_phase_progress(self, phase: str, message: str, current: int, total: int, filename: str = None, from_cache: bool = False):
+        """Emit phase progress event."""
+        progress = PhaseProgress(
+            phase=phase,
+            message=message,
+            current=current,
+            total=total,
+            filename=filename,
+            from_cache=from_cache
+        )
+        async with self._stats_lock:
+            self._stats["phase_progress"][phase] = {
+                "current": current,
+                "total": total,
+                "message": message
+            }
+        await self._events.emit("phase_progress", progress)
+    
+    async def complete_phase(self, phase: str, message: str = ""):
+        """Complete a phase and emit phase_complete event."""
+        await self._events.emit("phase_complete", phase, message)
+    
+    async def emit_hash_start(self, filename: str):
+        """Emit hash_start event."""
+        await self._events.emit("hash_start", filename)
+    
+    async def emit_hash_complete(self, filename: str, current: int, total: int, from_cache: bool, hash_value: str = None):
+        """Emit hash_complete event."""
+        progress = HashProgress(
+            filename=filename,
+            current=current,
+            total=total,
+            from_cache=from_cache,
+            hash_value=hash_value[:16] if hash_value else None
+        )
+        await self._events.emit("hash_complete", progress)
+    
+    async def emit_sync_start(self, filename: str):
+        """Emit sync_start event."""
+        await self._events.emit("sync_start", filename)
+    
+    async def emit_sync_complete(self, filename: str, success: bool):
+        """Emit sync_complete event."""
+        if success:
+            async with self._stats_lock:
+                self._stats["synced"] = self._stats.get("synced", 0) + 1
+        await self._events.emit("sync_complete", filename, success)
     
     # Internal methods
     async def _run(self):

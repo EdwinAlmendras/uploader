@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Callable
+from typing import Dict, List, Callable, Optional
 import asyncio
 import logging
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class FileProgress:
@@ -14,6 +15,27 @@ class FileProgress:
     total_bytes: int = 0
     percent: float = 0.0
     status: str = "pending"  # pending, uploading, analyzing, completed, failed
+
+
+@dataclass
+class PhaseProgress:
+    """Progress information for a processing phase."""
+    phase: str  # detecting, checking_mega, hashing, checking_db, syncing, uploading
+    message: str
+    current: int = 0
+    total: int = 0
+    filename: Optional[str] = None
+    from_cache: bool = False  # For hash phase: whether hash came from cache
+
+
+@dataclass 
+class HashProgress:
+    """Progress information for hash calculation."""
+    filename: str
+    current: int  # Current file index
+    total: int  # Total files
+    from_cache: bool  # Whether hash was retrieved from cache
+    hash_value: Optional[str] = None  # The calculated hash (first 16 chars)
 
 
 class EventEmitter:

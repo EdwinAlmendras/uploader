@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Callable, Tuple, Set, Dict
+from typing import Optional, Callable, Tuple, Set, Dict, Any
 from dataclasses import dataclass
 from uploader.services import StorageService
 from uploader.services.managed_storage import ManagedStorageService

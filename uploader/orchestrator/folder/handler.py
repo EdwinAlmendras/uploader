@@ -8,11 +8,14 @@ from uploader.models import UploadConfig
 from .file_processor import FileProcessor
 from .file_existence import FileExistenceChecker, Blake3Deduplicator, PreviewChecker, MegaToDbSynchronizer, MegaFileInfo
 from .parallel_upload import ParallelUploadCoordinator
-from .process import FolderUploadProcess
+from .process import FolderUploadProcess, ProcessPhase
+from .pipeline_deduplicator import PipelineDeduplicator
 from .set_processor import ImageSetProcessor
 from uploader.services.analyzer import AnalyzerService
 from uploader.services.repository import MetadataRepository
 from uploader.services.storage import StorageService
+from uploader.services.managed_storage import ManagedStorageService
+from uploader.services.hash_cache import HashCache, get_hash_cache
 
 import logging
 logger = logging.getLogger(__name__)
@@ -48,6 +51,8 @@ class FolderUploadHandler:
         self._upload_coordinator = ParallelUploadCoordinator(self._file_processor, max_parallel=1)
         self._storage = storage
         self._repository = repository
+        self._hash_cache: Optional[HashCache] = None
+        self._analyzer = analyzer
     
     def upload_folder(
         self,
@@ -93,11 +98,21 @@ class FolderUploadHandler:
             
             dest_path = f"{dest}/{folder_path.name}" if dest else folder_path.name
             
+            # Initialize hash cache
+            if self._hash_cache is None:
+                self._hash_cache = await get_hash_cache()
+            
             # Step 0: Detect image sets and individual files
+            if process:
+                await process.set_phase(ProcessPhase.DETECTING, "Detecting files and sets...")
+            
             logger.info("Detecting image sets...")
             sets, individual_files = self._file_collector.detect_sets_and_files(folder_path)
             
             logger.info(f"Found {len(sets)} image set(s) and {len(individual_files)} individual file(s)")
+            
+            if process:
+                await process.complete_phase("detecting", f"Found {len(sets)} sets, {len(individual_files)} files")
             
             # Calculate total (sets count as 1 each, plus individual files)
             total = len(sets) + len(individual_files)
@@ -172,18 +187,31 @@ class FolderUploadHandler:
                 all_files = individual_files
             
                 # Step 2.1: Check in MEGA by path (obtain nodes and mega_ids)
+                if process:
+                    await process.set_phase(ProcessPhase.CHECKING_MEGA, "Checking files in MEGA...")
+                
                 logger.info("Checking individual files in MEGA by path")
                 pending_after_mega, skipped_mega, mega_files_info = await self._existence_checker.check(
                     all_files, folder_path, dest_path, len(all_files), progress_callback
                 )
+                
+                if process:
+                    await process.complete_phase("checking_mega", f"{skipped_mega} found in MEGA, {len(pending_after_mega)} to check")
                 
                 # Step 2.1.5: Synchronize files from MEGA to DB (if they exist in MEGA but not in DB)
                 synced_count = 0
                 existing_files_with_source_id = {}  # path -> source_id for existing files
                 
                 if mega_files_info and self._mega_to_db_synchronizer and self._repository:
+                    if process:
+                        await process.set_phase(ProcessPhase.SYNCING, "Syncing MEGA files to database...")
+                    
                     logger.info("Checking if files found in MEGA exist in database...")
+                    sync_total = len(mega_files_info)
+                    sync_current = 0
+                    
                     for file_path, mega_info in mega_files_info.items():
+                        sync_current += 1
                         if mega_info.source_id:
                             # Check if exists in DB by source_id
                             exists_in_db = await self._repository.exists_by_source_id(mega_info.source_id)
@@ -196,6 +224,13 @@ class FolderUploadHandler:
                                 )
                             else:
                                 # File exists in MEGA but NOT in DB - sync to DB
+                                if process:
+                                    await process.emit_sync_start(file_path.name)
+                                    await process.emit_phase_progress(
+                                        "syncing", f"Syncing: {file_path.name}",
+                                        sync_current, sync_total, file_path.name
+                                    )
+                                
                                 logger.info(
                                     "File '%s' exists in MEGA but NOT in DB (source_id: %s) - SYNCING to DB",
                                     file_path.name, mega_info.source_id
@@ -206,17 +241,24 @@ class FolderUploadHandler:
                                 if synced_source_id:
                                     synced_count += 1
                                     existing_files_with_source_id[file_path] = synced_source_id
+                                    if process:
+                                        await process.emit_sync_complete(file_path.name, True)
                                 else:
                                     logger.warning(
                                         "Failed to sync file '%s' to DB - will be treated as new",
                                         file_path.name
                                     )
+                                    if process:
+                                        await process.emit_sync_complete(file_path.name, False)
                         else:
                             # File in MEGA has no mega_id - cannot sync, treat as new
                             logger.debug(
                                 "File '%s' exists in MEGA but has no mega_id - cannot sync to DB",
                                 file_path.name
                             )
+                    
+                    if process:
+                        await process.complete_phase("syncing", f"Synced {synced_count} files")
                 
                 if synced_count > 0:
                     logger.info(f"Synchronized {synced_count} file(s) from MEGA to DB")
@@ -224,17 +266,80 @@ class FolderUploadHandler:
                 # Step 2.2: Check remaining files (not in MEGA) in database by blake3_hash
                 skipped_hash = 0
                 files_to_check_db = [fp for fp, _ in pending_after_mega]
+                path_to_hash = {}  # Will store calculated hashes for later use
                 
                 if files_to_check_db and self._blake3_deduplicator:
+                    if process:
+                        await process.set_phase(ProcessPhase.HASHING, "Calculating hashes...")
+                    
                     logger.info("Checking remaining individual files in database by blake3_hash (deduplication)")
-                    existing_paths, path_to_source_id = await self._blake3_deduplicator.check(
-                        files_to_check_db, progress_callback
+                    
+                    # Use PipelineDeduplicator with hash cache for better performance and progress
+                    pipeline = PipelineDeduplicator(
+                        self._repository,
+                        self._storage,
+                        hash_cache=self._hash_cache
                     )
-                    skipped_hash = len(existing_paths)
+                    
+                    # Setup callbacks for hash progress
+                    if process:
+                        async def on_hash_start(filename):
+                            await process.emit_hash_start(filename)
+                        
+                        hash_count = [0]  # Using list to allow modification in closure
+                        async def on_hash_complete(filename, hash_val, from_cache):
+                            hash_count[0] += 1
+                            await process.emit_hash_complete(
+                                filename, hash_count[0], len(files_to_check_db), 
+                                from_cache, hash_val
+                            )
+                            await process.emit_phase_progress(
+                                "hashing", 
+                                f"{'📦 Cache' if from_cache else '🔢 Calculated'}: {filename}",
+                                hash_count[0], len(files_to_check_db), filename, from_cache
+                            )
+                        
+                        # Set callbacks (wrapping async functions)
+                        def sync_hash_start(filename):
+                            import asyncio
+                            try:
+                                loop = asyncio.get_running_loop()
+                                loop.create_task(on_hash_start(filename))
+                            except RuntimeError:
+                                pass
+                        
+                        def sync_hash_complete(filename, hash_val, from_cache):
+                            import asyncio
+                            try:
+                                loop = asyncio.get_running_loop()
+                                loop.create_task(on_hash_complete(filename, hash_val, from_cache))
+                            except RuntimeError:
+                                pass
+                        
+                        pipeline.on_hash_start(sync_hash_start)
+                        pipeline.on_hash_complete(sync_hash_complete)
+                    
+                    # Process files through pipeline
+                    files_with_rel = [(fp, fp.relative_to(folder_path)) for fp in files_to_check_db]
+                    pending_files_result, skipped_paths_set, path_to_source_id, path_to_hash = await pipeline.process(
+                        files_with_rel, progress_callback
+                    )
+                    
+                    skipped_hash = len(skipped_paths_set)
                     # Add to existing_files_with_source_id
                     existing_files_with_source_id.update(path_to_source_id)
                     
-                    if existing_paths:
+                    # Use pending files from pipeline result
+                    pending_files = pending_files_result
+                    
+                    # Save hash cache
+                    if self._hash_cache:
+                        await self._hash_cache.save()
+                    
+                    if process:
+                        await process.complete_phase("hashing", f"{skipped_hash} duplicates found")
+                    
+                    if skipped_paths_set:
                         logger.debug(
                             "After blake3_hash check: %d files skipped (in database), %d files remaining to upload",
                             skipped_hash, len(files_to_check_db) - skipped_hash
@@ -242,18 +347,13 @@ class FolderUploadHandler:
                     else:
                         logger.debug("After blake3_hash check: All %d files are new (not in database)", len(files_to_check_db))
                 else:
+                    # No deduplicator available, use files from MEGA check
+                    pending_files = pending_after_mega
+                    
                     if not files_to_check_db:
                         logger.debug("No files to check in database (all were found in MEGA)")
                     elif not self._blake3_deduplicator:
                         logger.warning("Blake3Deduplicator not available, skipping database check")
-                
-                # Filter out existing files from pending_files
-                existing_paths_set = set(existing_files_with_source_id.keys())
-                pending_files = [
-                    (file_path, rel_path)
-                    for file_path, rel_path in pending_after_mega
-                    if file_path not in existing_paths_set
-                ]
                 
                 total_skipped = skipped_mega + skipped_hash
                 logger.info(
@@ -278,8 +378,44 @@ class FolderUploadHandler:
                         process._stats["skipped"] = total_skipped
                     await process._events.emit("progress", process.stats)
                 
+                # Step 2.3.5: Check available space for files to upload (only if ManagedStorageService)
+                if pending_files and isinstance(self._storage, ManagedStorageService):
+                    if process:
+                        await process.set_phase(ProcessPhase.CHECKING_SPACE, "Checking storage space...")
+                    
+                    logger.info("Calculating total size of files to upload...")
+                    total_size_to_upload = sum(file_path.stat().st_size for file_path, _ in pending_files)
+                    total_size_gb = total_size_to_upload / (1024 ** 3)
+                    
+                    logger.info(f"Total size to upload: {total_size_gb:.2f} GB ({len(pending_files)} files)")
+                    logger.info("Checking total storage availability (across all accounts)...")
+                    
+                    has_space = await self._storage.check_total_available_space(total_size_to_upload)
+                    
+                    if not has_space:
+                        error_msg = f"No storage space available for {total_size_gb:.2f} GB. Please free up space or add a new MEGA account."
+                        logger.error(error_msg)
+                        if process:
+                            await process.complete_phase("checking_space", "Insufficient space")
+                        return FolderUploadResult(
+                            success=False,
+                            folder_name=folder_path.name,
+                            total_files=total,
+                            uploaded_files=0,
+                            failed_files=len(pending_files),
+                            results=all_results,
+                            error=error_msg
+                        )
+                    
+                    logger.info("Storage space available")
+                    if process:
+                        await process.complete_phase("checking_space", f"{total_size_gb:.2f} GB available")
+                
                 # Step 2.4: Upload individual files if any pending
                 if pending_files:
+                    if process:
+                        await process.set_phase(ProcessPhase.UPLOADING, f"Uploading {len(pending_files)} files...")
+                    
                     # Create root folder first
                     root_handle = await self._storage.create_folder(dest_path)
                     
@@ -316,10 +452,15 @@ class FolderUploadHandler:
             failed = sum(1 for r in all_results if not r.success)
             
             if process:
+                await process.set_phase(ProcessPhase.COMPLETED, "Upload complete")
                 async with process._stats_lock:
                     process._stats["uploaded"] = uploaded
                     process._stats["failed"] = failed
                 await process._events.emit("progress", process.stats)
+            
+            # Save hash cache on completion
+            if self._hash_cache:
+                await self._hash_cache.save()
             
             return FolderUploadResult(
                 success=failed == 0,
