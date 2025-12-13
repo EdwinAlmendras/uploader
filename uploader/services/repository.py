@@ -327,8 +327,9 @@ class MetadataRepository(IMetadataRepository):
             return False
         
         try:
-            response = await self._api.get(f"/documents/{source_id}")
-            return response.status_code == 200
+            response = await self._api.get(f"/documents/{source_id}/exists")
+            result = response.json()
+            return result.get("exists", False)
         except Exception:
             return False
     
