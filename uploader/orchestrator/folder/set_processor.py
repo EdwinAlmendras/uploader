@@ -4,25 +4,25 @@ Set Processor - Processes image sets: thumbnails, 7z creation, and upload.
 Uses mediakit for image processing and archive creation.
 """
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict, Any, Callable
+from typing import List, Optional, Tuple, Callable, Union
 import asyncio
 import logging
 import tempfile
 import shutil
 from enum import IntEnum
 
-from mediakit import is_image
-from mediakit.set_processor import SetProcessor as MediakitSetProcessor, SetMetadata
-from mediakit.image.resizer import SetResizer, ResizeConfig
+from PIL import Image
+
+from mediakit.set_processor import SetProcessor as MediakitSetProcessor
 from mediakit.image.selector import ImageSelector
 from mediakit.archive.sevenzip import SevenZipArchiver, ArchiveConfig
-from mediakit.core.interfaces import ResizeQuality
-from mediakit.preview.image_preview import ImagePreviewGenerator, GridConfig
+from mediakit.preview.image_preview import ImagePreviewGenerator
 
 from uploader.services import AnalyzerService, MetadataRepository, StorageService
 from uploader.orchestrator.models import UploadResult
 from uploader.models import UploadConfig
 from mediakit.analyzer import generate_id
+from mediakit.image.processor import ImageProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class ImageSetProcessor:
         self._repository = repository
         self._storage = storage
         self._config = config
-        
+        self._image_processor = ImageProcessor()
         # Initialize mediakit components
         self._set_processor = MediakitSetProcessor()
         self._selector = ImageSelector()
@@ -192,7 +192,7 @@ class ImageSetProcessor:
                         progress_callback(f"Uploading cover: {cover.name}...", 95, 100)
                     
                     # Upload cover to same path as 7z with name {set_name}_cover.jpg
-                    cover_filename = f"{set_name}_cover.jpg"
+                    cover_filename = f"{set_name}.cover.jpg"
                     
                     # Create a temp copy with correct name for upload
                     temp_cover = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
@@ -279,14 +279,38 @@ class ImageSetProcessor:
                 []
             )
     
+    @staticmethod
+    def _process_single_image_static(
+        image_path: Path,
+        thumb_320_dir: Path,
+        thumb_1024_dir: Path
+    ) -> bool:
+        """
+        Static function to process a single image (pickleable for ProcessPoolExecutor).
+        
+        Creates its own ImageProcessor instance to avoid serialization issues.
+        """
+        try:
+            from mediakit.image.processor import ImageProcessor
+            processor = ImageProcessor()
+            output_name = image_path.stem + ".jpg"
+            thumb_320_path = thumb_320_dir / output_name
+            processor.thumb(image_path, thumb_320_path, 320)
+            thumb_1024_path = thumb_1024_dir / output_name
+            processor.resize(image_path, thumb_1024_path, 1024, resample=Image.Resampling.BICUBIC)
+            return True
+        except Exception as e:
+            logger.warning(f"Error generating thumbnails for {image_path.name}: {e}")
+            return False
+    
     async def _generate_thumbnails(
         self,
         set_folder: Path,
         images: List[Path],
         progress_callback: Optional[Callable]
     ) -> None:
-        """Generate 320px and 1024px thumbnails for all images."""
-        logger.info("Generating thumbnails (320px and 1024px)...")
+        """Generate 320px and 1024px thumbnails for all images using ProcessPoolExecutor."""
+        logger.info(f"Generating thumbnails (320px and 1024px) for {len(images)} images...")
         
         # Create thumbnail folders
         thumb_320_dir = set_folder / "m"
@@ -294,33 +318,56 @@ class ImageSetProcessor:
         thumb_320_dir.mkdir(exist_ok=True)
         thumb_1024_dir.mkdir(exist_ok=True)
         
-        # Process images in parallel batches
-        loop = asyncio.get_event_loop()
-        batch_size = 10
+        # Process images in parallel using ProcessPoolExecutor to utilize all CPU cores
+        import os
+        from concurrent.futures import ProcessPoolExecutor
         
-        for i in range(0, len(images), batch_size):
-            batch = images[i:i+batch_size]
-            tasks = [
-                loop.run_in_executor(
-                    None,
-                    self._resize_image_thumbnails,
+        total_images = len(images)
+        
+        # Use ProcessPoolExecutor to utilize all CPU cores
+        # Process all images in parallel (up to CPU count workers)
+        max_workers = os.cpu_count() or os.getenv("IMAGE_RESIZE_MAX_WORKERS")
+        logger.info(f"Using ProcessPoolExecutor with {max_workers} workers for {total_images} images")
+        
+        # Create executor and process all images
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks to the executor
+            futures = [
+                executor.submit(
+                    ImageSetProcessor._process_single_image_static,
                     img,
                     thumb_320_dir,
                     thumb_1024_dir
                 )
-                for img in batch
+                for img in images
             ]
             
-            await asyncio.gather(*tasks, return_exceptions=True)
+            # Wrap concurrent futures as asyncio futures
+            loop = asyncio.get_event_loop()
+            async_futures = [asyncio.wrap_future(f, loop=loop) for f in futures]
             
-            if progress_callback:
-                progress_callback(
-                    f"Generated thumbnails: {min(i+batch_size, len(images))}/{len(images)}",
-                    (i+batch_size) * 30 // len(images),
-                    100
-                )
+            # Process results as they complete, with progress updates
+            batch_size = max(1, max_workers // 2)  # Update progress every N completions
+            completed = 0
+            
+            for future in asyncio.as_completed(async_futures):
+                try:
+                    result = await future
+                    completed += 1
+                    
+                    # Update progress periodically
+                    if progress_callback and (completed % batch_size == 0 or completed == total_images):
+                        progress_callback(
+                            f"Generated thumbnails: {completed}/{total_images}",
+                            (completed * 30 // total_images) if total_images > 0 else 0,
+                            100
+                        )
+                    
+                except Exception as e:
+                    logger.error(f"Error in thumbnail generation task: {e}")
+                    completed += 1
         
-        logger.info("Thumbnail generation complete")
+        logger.info(f"Thumbnail generation complete: {completed}/{total_images} images processed")
     
     async def _generate_grid_preview(
         self,
@@ -355,63 +402,6 @@ class ImageSetProcessor:
             logger.error(f"Error generating grid preview: {e}", exc_info=True)
             return None
     
-    @staticmethod
-    def _resize_image_thumbnails(
-        image_path: Path,
-        thumb_320_dir: Path,
-        thumb_1024_dir: Path
-    ) -> None:
-        """Resize a single image to 320px and 1024px thumbnails."""
-        from PIL import Image
-        from mediakit.image.orientation import OrientationFixer
-        
-        try:
-            with Image.open(image_path) as img:
-                fixed_img = OrientationFixer.fix_pil_image(img)
-                
-                # Determine output name (convert to jpg)
-                output_name = image_path.stem + ".jpg"
-                
-                # Resize to 320px
-                thumb_320_path = thumb_320_dir / output_name
-                ImageSetProcessor._resize_to_max_dimension(fixed_img, thumb_320_path, 320)
-                
-                # Resize to 1024px
-                thumb_1024_path = thumb_1024_dir / output_name
-                ImageSetProcessor._resize_to_max_dimension(fixed_img, thumb_1024_path, 1024)
-                
-        except Exception as e:
-            logger.warning(f"Error generating thumbnails for {image_path.name}: {e}")
-    
-    @staticmethod
-    def _resize_to_max_dimension(img, output_path: Path, max_size: int) -> None:
-        """Resize image so the longest side is max_size."""
-        from PIL import Image
-        
-        w, h = img.size
-        
-        if w > max_size or h > max_size:
-            if w > h:
-                new_w = max_size
-                new_h = int(h * max_size / w)
-            else:
-                new_h = max_size
-                new_w = int(w * max_size / h)
-            resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        else:
-            resized = img
-        
-        # Convert to RGB if needed
-        if resized.mode in ("RGBA", "LA"):
-            background = Image.new("RGB", resized.size, (255, 255, 255))
-            alpha = resized.split()[-1]
-            background.paste(resized.convert("RGB"), mask=alpha)
-            resized = background
-        elif resized.mode not in ("RGB", "L"):
-            resized = resized.convert("RGB")
-        
-        resized.save(output_path, format="JPEG", quality=90, optimize=True, progressive=True)
-    
     async def _process_set_images(
         self,
         set_folder: Path,
@@ -419,11 +409,19 @@ class ImageSetProcessor:
         set_source_id: str,
         progress_callback: Optional[Callable]
     ) -> List[UploadResult]:
-        """Process all images in the set: analyze and save to API with set_doc_id."""
+        """
+        Process all images in the set: analyze all first, then save to API in batch.
+        
+        Optimized to analyze all images first, then make a single batch POST instead
+        of one POST per image. This significantly reduces HTTP requests.
+        """
         results = []
+        batch_items = []  # Accumulate data for batch POST
         
         logger.info(f"Processing {len(images)} images for set...")
         
+        # Step 1: Analyze all images first (can be done in parallel if needed)
+        analyzed_images = []
         for idx, image_path in enumerate(images, 1):
             try:
                 if progress_callback:
@@ -443,25 +441,68 @@ class ImageSetProcessor:
                 # Add set_doc_id reference
                 tech_data["set_doc_id"] = set_source_id
                 
-                # Save document with set_doc_id
-                await self._repository.save_document(tech_data)
-                
-                # Save photo metadata
-                await self._repository.save_photo_metadata(image_source_id, tech_data)
-                
-                logger.debug(f"Saved image {image_path.name} with set_doc_id={set_source_id}")
-                
-                results.append(
-                    UploadResult.ok(image_source_id, image_path.name, None, None)
-                )
+                analyzed_images.append((image_path, image_source_id, tech_data))
                 
             except Exception as e:
-                logger.error(f"Error processing image {image_path.name}: {e}")
+                logger.error(f"Error analyzing image {image_path.name}: {e}")
                 results.append(
                     UploadResult.fail(image_path.name, str(e))
                 )
         
-        logger.info(f"Processed {len(results)} images for set")
+        # Step 2: Prepare batch data for all successfully analyzed images
+        successful_images = []  # Track images that will be in batch
+        for image_path, image_source_id, tech_data in analyzed_images:
+            try:
+                # Prepare document data
+                document_data = self._repository.prepare_document(tech_data)
+                
+                # Prepare photo metadata
+                photo_metadata = self._repository.prepare_photo_metadata(image_source_id, tech_data)
+                
+                # Add to batch
+                batch_items.append({
+                    "document": document_data,
+                    "photo_metadata": photo_metadata
+                })
+                successful_images.append((image_path, image_source_id))
+                
+            except Exception as e:
+                logger.error(f"Error preparing batch data for {image_path.name}: {e}")
+                results.append(
+                    UploadResult.fail(image_path.name, str(e))
+                )
+        
+        # Step 3: Save all images in a single batch POST
+        if batch_items:
+            try:
+                if progress_callback:
+                    progress_callback(
+                        f"Saving {len(batch_items)} images to API (batch)...",
+                        60,
+                        100
+                    )
+                
+                logger.info(f"Saving {len(batch_items)} images to API in batch...")
+                await self._repository.save_batch(batch_items)
+                
+                # Create success results for all successfully saved images
+                for image_path, image_source_id in successful_images:
+                    results.append(
+                        UploadResult.ok(image_source_id, image_path.name, None, None)
+                    )
+                    logger.debug(f"Saved image {image_path.name} with set_doc_id={set_source_id}")
+                
+                logger.info(f"Successfully saved {len(batch_items)} images in batch")
+                
+            except Exception as e:
+                logger.error(f"Error saving batch to API: {e}", exc_info=True)
+                # If batch fails, mark all batch items as failed
+                for image_path, image_source_id in successful_images:
+                    results.append(
+                        UploadResult.fail(image_path.name, f"Batch save failed: {str(e)}")
+                    )
+        
+        logger.info(f"Processed {len(results)} images for set ({len([r for r in results if r.success])} successful)")
         return results
     
     async def _save_set_document(
