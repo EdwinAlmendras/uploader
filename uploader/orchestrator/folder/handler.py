@@ -218,12 +218,11 @@ class FolderUploadHandler:
                             if exists_in_db:
                                 # File exists in both MEGA and DB - skip
                                 existing_files_with_source_id[file_path] = mega_info.source_id
-                        logger.debug(
-                                    "File '%s' exists in MEGA and DB (source_id: %s) - SKIP",
-                                    file_path.name, mega_info.source_id
-                        )
-                    else:
-                                # File exists in MEGA but NOT in DB - sync to DB
+                                logger.debug(
+                                            "File '%s' exists in MEGA and DB (source_id: %s) - SKIP",
+                                            file_path.name, mega_info.source_id
+                                )
+                            else:
                                 if process:
                                     await process.emit_sync_start(file_path.name)
                                     await process.emit_phase_progress(
@@ -250,16 +249,14 @@ class FolderUploadHandler:
                                     )
                                     if process:
                                         await process.emit_sync_complete(file_path.name, False)
-                else:
-                    # File in MEGA has no mega_id - cannot sync, treat as new
-                    logger.debug(
-                        "File '%s' exists in MEGA but has no mega_id - cannot sync to DB",
-                        file_path.name
-                    )
-                    
-                    if process:
-                        await process.complete_phase("syncing", f"Synced {synced_count} files")
-                
+                        else:
+                            logger.debug(
+                                "File '%s' exists in MEGA but has no mega_id - cannot sync to DB",
+                                file_path.name
+                            )
+                            if process:
+                                await process.complete_phase("syncing", f"Synced {synced_count} files")
+                        
                 if synced_count > 0:
                     logger.info(f"Synchronized {synced_count} file(s) from MEGA to DB")
                 
