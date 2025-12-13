@@ -457,13 +457,18 @@ class ImageSetProcessor:
         set_folder: Path,
         images: List[Path],
         set_source_id: str,
-        progress_callback: Optional[Callable]
+        progress_callback: Optional[Callable],
+        perceptual_features: Optional[Dict[Path, Tuple[Optional[str], Optional[List[float]]]]] = None
     ) -> List[UploadResult]:
         """
         Process all images in the set: analyze all first, then save to API in batch.
         
         Optimized to analyze all images first, then make a single batch POST instead
         of one POST per image. This significantly reduces HTTP requests.
+        
+        Args:
+            perceptual_features: Optional dict mapping image_path -> (phash, avg_color_lab)
+                If provided, these values will be used instead of recalculating them.
         """
         results = []
         batch_items = []  # Accumulate data for batch POST
