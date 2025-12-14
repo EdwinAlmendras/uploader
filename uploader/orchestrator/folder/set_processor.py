@@ -126,6 +126,7 @@ class ImageSetProcessor:
             existing_source_id = None
             existing_mega_handle = None
             archive_exists_in_both = False
+            archive_hash = None  # Will store the hash for later use
             
             if archive_file_for_hash and archive_file_for_hash.exists():
                 try:
@@ -271,6 +272,15 @@ class ImageSetProcessor:
                 
                 logger.info(f"Created {len(archive_files)} archive file(s)")
             
+            # Calculate hash if we don't have it yet (for new archives)
+            if not archive_hash and archive_files and archive_files[0].exists():
+                try:
+                    logger.info(f"Calculating hash for archive before saving: {archive_files[0].name}")
+                    archive_hash = await blake3_file(archive_files[0])
+                    logger.info(f"Archive hash calculated: {archive_hash}")
+                except Exception as e:
+                    logger.warning(f"Failed to calculate archive hash: {e}")
+            
             # Step 5: Upload 7z to MEGA (sequentially, one at a time)
             mega_handles = []
             for idx, archive_file in enumerate(archive_files, 1):
@@ -388,8 +398,8 @@ class ImageSetProcessor:
                         except:
                             pass
             
-            # Step 8: Save set document to API
-            await self._save_set_document(set_source_id, set_name, archive_name, len(images))
+            # Step 8: Save set document to API (with blake3_hash if available)
+            await self._save_set_document(set_source_id, set_name, archive_name, len(images), archive_hash)
             
             logger.info(f"Successfully processed set: {set_name}")
             
@@ -700,7 +710,8 @@ class ImageSetProcessor:
         set_source_id: str,
         set_name: str,
         archive_name: str,
-        image_count: int
+        image_count: int,
+        blake3_hash: Optional[str] = None
     ) -> None:
         """Save set document to API (the 7z archive document)."""
         set_doc = {
@@ -710,6 +721,11 @@ class ImageSetProcessor:
             "set_image_count": image_count,
             "set_name": set_name
         }
+        
+        # Include blake3_hash if available
+        if blake3_hash:
+            set_doc["blake3_hash"] = blake3_hash
+            logger.info(f"Including blake3_hash in set document: {blake3_hash[:16]}...")
         
         await self._repository.save_set_document(set_doc)
         logger.info(f"Saved set document: {set_source_id}")
