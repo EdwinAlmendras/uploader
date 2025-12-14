@@ -136,18 +136,24 @@ class ImageSetProcessor:
                     
                     archive_hash = await blake3_file(archive_file_for_hash)
                     
+                    logger.info(f"Archive hash: {archive_hash}")
                     # Check if exists in DB
+                    
                     if self._repository:
                         existing_hashes = await self._repository.check_exists_batch([archive_hash])
+                        logger.info(f"Existing hashes: {existing_hashes}")
                         if archive_hash in existing_hashes:
                             doc_info = existing_hashes[archive_hash]
-                            
+                            logger.info(f"Doc info: {doc_info}")
                             # Handle both old and new format
                             if isinstance(doc_info, dict):
                                 existing_source_id = doc_info.get("source_id")
+                                logger.info(f"Existing source ID: {existing_source_id}")
                                 existing_mega_handle = doc_info.get("mega_handle")
+                                logger.info(f"Existing mega handle: {existing_mega_handle}")
                             else:
                                 existing_source_id = doc_info
+                                logger.info(f"Existing source ID: {existing_source_id}")
                             
                             logger.info(
                                 f"Archive hash exists in DB (source_id: {existing_source_id})"
@@ -158,9 +164,12 @@ class ImageSetProcessor:
                                 exists_in_mega = False
                                 try:
                                     if isinstance(self._storage, ManagedStorageService):
+                                        logger.info(f"Checking if archive exists in MEGA using ManagedStorageService")
                                         exists_in_mega = await self._storage.manager.find_by_mega_id(existing_source_id) is not None
                                     else:
+                                        logger.info(f"Checking if archive exists in MEGA using StorageService")
                                         exists_in_mega = await self._storage.exists_by_mega_id(existing_source_id)
+                                        logger.info(f"Archive exists in MEGA: {exists_in_mega}")
                                 except Exception as e:
                                     logger.warning(f"MEGA check failed for archive: {e}")
                                 
@@ -173,6 +182,10 @@ class ImageSetProcessor:
                                     logger.info(
                                         f"Archive exists in DB but NOT in MEGA (source_id: {existing_source_id}) - will re-upload"
                                     )
+                
+                    else:
+                        logger.warning(f"Repository not initialized, skipping DB check")
+                
                 except Exception as e:
                     logger.warning(f"Error checking archive existence: {e}", exc_info=True)
             
