@@ -104,23 +104,12 @@ class ImageSetProcessor:
             
             # Check if 7z exists in files subfolder
             archive_file_for_hash = None
-            archive_files_for_upload = None  # Will store created archive files if we create them
             
             if existing_archive_path.exists():
                 logger.info(f"Found existing 7z archive at: {existing_archive_path}")
                 archive_file_for_hash = existing_archive_path
             else:
-                # Create 7z archive to calculate hash
-                logger.info(f"Creating 7z archive to verify: {archive_name}")
-                if progress_callback:
-                    progress_callback(f"Creating archive for verification: {archive_name}...", 5, 100)
-                
-                archive_files_for_upload = self._archiver.create(set_folder, archive_name)
-                if archive_files_for_upload:
-                    archive_file_for_hash = archive_files_for_upload[0]  # Use first part for hash
-                    logger.info(f"Created archive for verification: {archive_file_for_hash}")
-                else:
-                    logger.warning(f"Failed to create archive for verification, proceeding with normal flow")
+                logger.info(f"No existing 7z archive found in files/ subfolder, will create new one during normal flow")
             
             # If we have an archive file, check if it already exists
             existing_source_id = None
@@ -241,17 +230,13 @@ class ImageSetProcessor:
             else:
                 logger.info(f"Skipping image processing - using existing 7z file from files/ subfolder")
             
-            # Step 4: Use existing 7z or the one we already created
+            # Step 4: Use existing 7z or create new one
             if existing_archive_path.exists() and existing_source_id and not archive_exists_in_both:
                 # Use existing 7z file for upload (re-upload scenario)
                 logger.info(f"Using existing 7z archive from files/ subfolder: {existing_archive_path}")
                 archive_files = [existing_archive_path]
-            elif archive_files_for_upload:
-                # Reuse the archive we created earlier for hash calculation
-                logger.info(f"Reusing archive created earlier: {len(archive_files_for_upload)} file(s)")
-                archive_files = archive_files_for_upload
             else:
-                # Create 7z archive (shouldn't normally reach here, but just in case)
+                # Create 7z archive (normal flow when no existing archive)
                 logger.info(f"Creating 7z archive: {archive_name}")
                 if progress_callback:
                     progress_callback(f"Creating archive: {archive_name}...", 60, 100)
