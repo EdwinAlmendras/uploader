@@ -515,11 +515,11 @@ class ImageSetProcessor:
                     
                     # Update progress periodically
                     if progress_callback and (completed % batch_size == 0 or completed == total_images):
-                progress_callback(
-                            f"Generated thumbnails: {completed}/{total_images}",
-                            (completed * 30 // total_images) if total_images > 0 else 0,
-                    100
-                )
+                        progress_callback(
+                                    f"Generated thumbnails: {completed}/{total_images}",
+                                    (completed * 30 // total_images) if total_images > 0 else 0,
+                            100
+                        )
                     
                 except Exception as e:
                     logger.error(f"Error in thumbnail generation task: {e}")

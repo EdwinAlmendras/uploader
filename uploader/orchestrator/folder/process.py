@@ -323,11 +323,11 @@ class FolderUploadProcess:
                 async def update_progress():
                     async with self._stats_lock:
                         if total is not None:
-                        self._stats["total_files"] = total
+                            self._stats["total_files"] = total
                         # Update stats based on message
                         if completed is not None:
-                        if "Uploaded:" in message or "Completed:" in message:
-                            self._stats["uploaded"] = completed
+                            if "Uploaded:" in message or "Completed:" in message:
+                                self._stats["uploaded"] = completed
                         elif "Failed:" in message:
                             self._stats["failed"] = completed
                     
