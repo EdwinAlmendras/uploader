@@ -376,49 +376,29 @@ class PipelineDeduplicator:
             if self._manager:
                 node_info = await self._manager.find_by_mega_id(source_id)
             else:
-                # For single storage, we need to get the node
                 # This is a limitation - single storage doesn't have find_by_mega_id
-                logger.debug(
-                    "PipelineDeduplicator: Cannot check preview for '%s' - single storage mode",
-                    file_path.name
-                )
+                logger.debug("Cannot check preview for '%s' - single storage mode", file_path.name)
                 return
             
             if not node_info:
-                logger.warning(
-                    "PipelineDeduplicator: Video node not found in MEGA for '%s' (source_id: %s)",
-                    file_path.name, source_id
-                )
+                logger.warning("Video node not found in MEGA for '%s' (source_id: %s)", file_path.name, source_id)
                 return
             
             _, node = node_info
             
             # Get the full path of the video in MEGA
             video_path = node.path
+            logger.info(f"Video path: {video_path}")
 
         
             # Construct preview path by changing extension to .jpg
             preview_path = video_path.rsplit('.', 1)[0] + '.jpg'
-            
-            logger.debug(
-                "PipelineDeduplicator: Checking preview for '%s' at '%s'",
-                file_path.name, preview_path
-            )
-            
-            # Check if preview exists
+            logger.info(f"Preview path: {preview_path}")
             preview_exists = await self._storage.exists(preview_path)
-            
             if preview_exists:
-                logger.debug(
-                    "PipelineDeduplicator: ✓ Preview exists for '%s'",
-                    file_path.name
-                )
+                logger.debug("Preview exists for '%s'", file_path.name)
             else:
-                logger.info(
-                    "PipelineDeduplicator: ✗ Preview missing for '%s' - REGENERATING",
-                    file_path.name
-                )
-                
+                logger.info("PipelineDeduplicator: ✗ Preview missing for '%s' - REGENERATING", file_path.name)
                 # Analyze video to get duration
                 tech_data = await self._analyzer.analyze_video_async(file_path)
                 duration = tech_data.get('duration', 0)
