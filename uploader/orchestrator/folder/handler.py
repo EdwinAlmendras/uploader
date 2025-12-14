@@ -186,91 +186,18 @@ class FolderUploadHandler:
                 logger.info(f"Processing {len(individual_files)} individual file(s)...")
                 
                 all_files = individual_files
-            
-                # Step 2.1: Check in MEGA by path (obtain nodes and mega_ids)
-                if process:
-                    await process.set_phase(ProcessPhase.CHECKING_MEGA, "Checking files in MEGA...")
                 
-                logger.info("Checking individual files in MEGA by path")
-                pending_after_mega, skipped_mega, mega_files_info = await self._existence_checker.check(
-                    all_files, folder_path, dest_path, len(all_files), progress_callback
-                )
-                
-                if process:
-                    await process.complete_phase("checking_mega", f"{skipped_mega} found in MEGA, {len(pending_after_mega)} to check")
-                
-                # Step 2.1.5: Synchronize files from MEGA to DB (if they exist in MEGA but not in DB)
-                synced_count = 0
-                existing_files_with_source_id = {}  # path -> source_id for existing files
-                
-                if mega_files_info and self._mega_to_db_synchronizer and self._repository:
-                    if process:
-                        await process.set_phase(ProcessPhase.SYNCING, "Syncing MEGA files to database...")
-                    
-                    logger.info("Checking if files found in MEGA exist in database...")
-                    sync_total = len(mega_files_info)
-                    sync_current = 0
-                    
-                    for file_path, mega_info in mega_files_info.items():
-                        sync_current += 1
-                        if mega_info.source_id:
-                            # Check if exists in DB by source_id
-                            exists_in_db = await self._repository.exists_by_source_id(mega_info.source_id)
-                            if exists_in_db:
-                                # File exists in both MEGA and DB - skip
-                                existing_files_with_source_id[file_path] = mega_info.source_id
-                                logger.debug(
-                                            "File '%s' exists in MEGA and DB (source_id: %s) - SKIP",
-                                            file_path.name, mega_info.source_id
-                                )
-                            else:
-                                if process:
-                                    await process.emit_sync_start(file_path.name)
-                                    await process.emit_phase_progress(
-                                        "syncing", f"Syncing: {file_path.name}",
-                                        sync_current, sync_total, file_path.name
-                                    )
-                                
-                                logger.info(
-                                    "File '%s' exists in MEGA but NOT in DB (source_id: %s) - SYNCING to DB",
-                                    file_path.name, mega_info.source_id
-                                )
-                                synced_source_id = await self._mega_to_db_synchronizer.sync_file(
-                                    file_path, mega_info, dest_path
-                                )
-                                if synced_source_id:
-                                    synced_count += 1
-                                    existing_files_with_source_id[file_path] = synced_source_id
-                                    if process:
-                                        await process.emit_sync_complete(file_path.name, True)
-                                else:
-                                    logger.warning(
-                                        "Failed to sync file '%s' to DB - will be treated as new",
-                                        file_path.name
-                                    )
-                                    if process:
-                                        await process.emit_sync_complete(file_path.name, False)
-                        else:
-                            logger.debug(
-                                "File '%s' exists in MEGA but has no mega_id - cannot sync to DB",
-                                file_path.name
-                            )
-                            if process:
-                                await process.complete_phase("syncing", f"Synced {synced_count} files")
-                        
-                if synced_count > 0:
-                    logger.info(f"Synchronized {synced_count} file(s) from MEGA to DB")
-                
-                # Step 2.2: Check remaining files (not in MEGA) in database by blake3_hash
+                # Step 2.1: Check files in database by blake3_hash
                 skipped_hash = 0
-                files_to_check_db = [fp for fp, _ in pending_after_mega]
+                files_to_check_db = all_files
                 path_to_hash = {}  # Will store calculated hashes for later use
+                existing_files_with_source_id = {}  # path -> source_id for existing files
                 
                 if files_to_check_db and self._blake3_deduplicator:
                     if process:
                         await process.set_phase(ProcessPhase.HASHING, "Calculating hashes...")
                     
-                    logger.info("Checking remaining individual files in database by blake3_hash (deduplication)")
+                    logger.info("Checking individual files in database by blake3_hash (deduplication)")
                     
                     # Use PipelineDeduplicator with hash cache for better performance and progress
                     pipeline = PipelineDeduplicator(
@@ -361,19 +288,17 @@ class FolderUploadHandler:
                     else:
                         logger.debug("After blake3_hash check: All %d files are new (not in database)", len(files_to_check_db))
                 else:
-                    # No deduplicator available, use files from MEGA check
-                    pending_files = pending_after_mega
+                    # No deduplicator available, prepare all files for upload
+                    pending_files = [(fp, fp.relative_to(folder_path)) for fp in files_to_check_db]
                     
-                    if not files_to_check_db:
-                        logger.debug("No files to check in database (all were found in MEGA)")
-                    elif not self._blake3_deduplicator:
+                    if not self._blake3_deduplicator:
                         logger.warning("Blake3Deduplicator not available, skipping database check")
                 
-                total_skipped = skipped_mega + skipped_hash
+                total_skipped = skipped_hash
                 logger.info(
                     f"Existence check summary: {len(all_files)} individual files, "
-                    f"{skipped_mega} skipped by MEGA path, {skipped_hash} skipped by blake3_hash, "
-                    f"{synced_count} synced from MEGA to DB, {total_skipped} total skipped, "
+                    f"{skipped_hash} skipped by blake3_hash, "
+                    f"{total_skipped} total skipped, "
                     f"{len(pending_files)} files to upload"
                 )
                 
