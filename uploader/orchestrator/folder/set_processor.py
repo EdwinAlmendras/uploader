@@ -19,6 +19,8 @@ from mediakit.archive.sevenzip import SevenZipArchiver, ArchiveConfig
 from mediakit.preview.image_preview import ImagePreviewGenerator
 
 from uploader.services import AnalyzerService, MetadataRepository, StorageService
+from uploader.services.managed_storage import ManagedStorageService
+from uploader.services.resume import blake3_file
 from uploader.orchestrator.models import UploadResult
 from uploader.models import UploadConfig
 from mediakit.analyzer import generate_id
@@ -86,7 +88,7 @@ class ImageSetProcessor:
             progress_callback(f"Processing set: {set_name}...", 0, 100)
         
         try:
-            # Step 1: Get images and generate thumbnails
+            # Step 1: Get images (needed for basic validation)
             images = self._selector.get_images(set_folder)
             if not images:
                 return (
@@ -95,6 +97,92 @@ class ImageSetProcessor:
                 )
             
             logger.info(f"Found {len(images)} images in set {set_name}")
+            
+            # Step 1.5: Check for existing 7z archive and verify if already uploaded
+            archive_name = f"{set_name}.7z"
+            existing_archive_path = set_folder.parent / "files" / archive_name
+            
+            # Check if 7z exists in files subfolder
+            archive_file_for_hash = None
+            archive_files_for_upload = None  # Will store created archive files if we create them
+            
+            if existing_archive_path.exists():
+                logger.info(f"Found existing 7z archive at: {existing_archive_path}")
+                archive_file_for_hash = existing_archive_path
+            else:
+                # Create 7z archive to calculate hash
+                logger.info(f"Creating 7z archive to verify: {archive_name}")
+                if progress_callback:
+                    progress_callback(f"Creating archive for verification: {archive_name}...", 5, 100)
+                
+                archive_files_for_upload = self._archiver.create(set_folder, archive_name)
+                if archive_files_for_upload:
+                    archive_file_for_hash = archive_files_for_upload[0]  # Use first part for hash
+                    logger.info(f"Created archive for verification: {archive_file_for_hash}")
+                else:
+                    logger.warning(f"Failed to create archive for verification, proceeding with normal flow")
+            
+            # If we have an archive file, check if it already exists
+            existing_source_id = None
+            existing_mega_handle = None
+            archive_exists_in_both = False
+            
+            if archive_file_for_hash and archive_file_for_hash.exists():
+                try:
+                    # Calculate blake3 hash
+                    logger.info(f"Calculating hash for archive: {archive_file_for_hash.name}")
+                    if progress_callback:
+                        progress_callback(f"Calculating archive hash...", 10, 100)
+                    
+                    archive_hash = await blake3_file(archive_file_for_hash)
+                    
+                    # Check if exists in DB
+                    if self._repository:
+                        existing_hashes = await self._repository.check_exists_batch([archive_hash])
+                        if archive_hash in existing_hashes:
+                            doc_info = existing_hashes[archive_hash]
+                            
+                            # Handle both old and new format
+                            if isinstance(doc_info, dict):
+                                existing_source_id = doc_info.get("source_id")
+                                existing_mega_handle = doc_info.get("mega_handle")
+                            else:
+                                existing_source_id = doc_info
+                            
+                            logger.info(
+                                f"Archive hash exists in DB (source_id: {existing_source_id})"
+                            )
+                            
+                            # Verify it also exists in MEGA
+                            if existing_source_id:
+                                exists_in_mega = False
+                                try:
+                                    if isinstance(self._storage, ManagedStorageService):
+                                        exists_in_mega = await self._storage.manager.find_by_mega_id(existing_source_id) is not None
+                                    else:
+                                        exists_in_mega = await self._storage.exists_by_mega_id(existing_source_id)
+                                except Exception as e:
+                                    logger.warning(f"MEGA check failed for archive: {e}")
+                                
+                                if exists_in_mega:
+                                    archive_exists_in_both = True
+                                    logger.info(
+                                        f"Archive exists in both DB and MEGA (source_id: {existing_source_id}) - SKIPPING entire process"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"Archive exists in DB but NOT in MEGA (source_id: {existing_source_id}) - will re-upload"
+                                    )
+                except Exception as e:
+                    logger.warning(f"Error checking archive existence: {e}", exc_info=True)
+            
+            # If archive exists in both DB and MEGA, skip everything and return
+            if archive_exists_in_both and existing_source_id:
+                logger.info(f"Set {set_name} already processed, skipping all operations")
+                return (
+                    UploadResult.ok(existing_source_id, set_name, existing_mega_handle, None),
+                    []  # No image results since we skipped processing
+                )
             
             # Step 1.1: Select cover (first vertical image)
             cover = self._selector.select_cover(images)
@@ -111,41 +199,64 @@ class ImageSetProcessor:
             
             grid_preview_path = await self._generate_grid_preview(set_folder)
             
-            # Step 2: Generate set document ID (for the 7z)
-            set_source_id = generate_id()
-            logger.info(f"Generated set source_id: {set_source_id}")
+            # Step 2: Generate or use existing set document ID (for the 7z)
+            if existing_source_id and not archive_exists_in_both:
+                # Use existing source_id if archive exists in DB but not in MEGA (re-upload)
+                set_source_id = existing_source_id
+                logger.info(f"Using existing set source_id for re-upload: {set_source_id}")
+            else:
+                # Generate new source_id for new archive
+                set_source_id = generate_id()
+                logger.info(f"Generated new set source_id: {set_source_id}")
             
-            # Step 3: Process all images (analyze and save to API with set_doc_id)
-            # Pass perceptual features to avoid recalculating them
-            image_results = await self._process_set_images(
-                set_folder,
-                images,
-                set_source_id,
-                progress_callback,
-                perceptual_features=perceptual_features
-            )
+            # Step 3: Process images only if we don't have an existing 7z file ready to upload
+            # If we have an existing 7z in files/ and it exists in DB but not MEGA, skip image processing
+            skip_image_processing = (existing_archive_path.exists() and existing_source_id and not archive_exists_in_both)
             
-            # Step 4: Create 7z archive
-            archive_name = f"{set_name}.7z"
-            logger.info(f"Creating 7z archive: {archive_name}")
-            if progress_callback:
-                progress_callback(f"Creating archive: {archive_name}...", 60, 100)
-            
-            archive_files = self._archiver.create(set_folder, archive_name)
-            
-            if not archive_files:
-                # Cleanup grid preview if exists
-                if grid_preview_path and grid_preview_path.exists():
-                    try:
-                        grid_preview_path.unlink(missing_ok=True)
-                    except:
-                        pass
-                return (
-                    UploadResult.fail(set_name, "Failed to create 7z archive"),
-                    image_results
+            image_results = []
+            if not skip_image_processing:
+                # Process all images (analyze and save to API with set_doc_id)
+                # Pass perceptual features to avoid recalculating them
+                image_results = await self._process_set_images(
+                    set_folder,
+                    images,
+                    set_source_id,
+                    progress_callback,
+                    perceptual_features=perceptual_features
                 )
+            else:
+                logger.info(f"Skipping image processing - using existing 7z file from files/ subfolder")
             
-            logger.info(f"Created {len(archive_files)} archive file(s)")
+            # Step 4: Use existing 7z or the one we already created
+            if existing_archive_path.exists() and existing_source_id and not archive_exists_in_both:
+                # Use existing 7z file for upload (re-upload scenario)
+                logger.info(f"Using existing 7z archive from files/ subfolder: {existing_archive_path}")
+                archive_files = [existing_archive_path]
+            elif archive_files_for_upload:
+                # Reuse the archive we created earlier for hash calculation
+                logger.info(f"Reusing archive created earlier: {len(archive_files_for_upload)} file(s)")
+                archive_files = archive_files_for_upload
+            else:
+                # Create 7z archive (shouldn't normally reach here, but just in case)
+                logger.info(f"Creating 7z archive: {archive_name}")
+                if progress_callback:
+                    progress_callback(f"Creating archive: {archive_name}...", 60, 100)
+                
+                archive_files = self._archiver.create(set_folder, archive_name)
+                
+                if not archive_files:
+                    # Cleanup grid preview if exists
+                    if grid_preview_path and grid_preview_path.exists():
+                        try:
+                            grid_preview_path.unlink(missing_ok=True)
+                        except:
+                            pass
+                    return (
+                        UploadResult.fail(set_name, "Failed to create 7z archive"),
+                        image_results
+                    )
+                
+                logger.info(f"Created {len(archive_files)} archive file(s)")
             
             # Step 5: Upload 7z to MEGA (sequentially, one at a time)
             mega_handles = []
@@ -404,11 +515,11 @@ class ImageSetProcessor:
                     
                     # Update progress periodically
                     if progress_callback and (completed % batch_size == 0 or completed == total_images):
-                        progress_callback(
+                progress_callback(
                             f"Generated thumbnails: {completed}/{total_images}",
                             (completed * 30 // total_images) if total_images > 0 else 0,
-                            100
-                        )
+                    100
+                )
                     
                 except Exception as e:
                     logger.error(f"Error in thumbnail generation task: {e}")
