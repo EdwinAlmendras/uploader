@@ -36,9 +36,17 @@ class SetDetector:
         sets = []
         individual_files = []
         
+        # Folders to ignore (thumbnail folders that shouldn't be scanned)
+        ignored_thumbnail_folders = {'m', 'x', 'xl'}
+        
         # Scan all subdirectories
         for item in folder_path.iterdir():
             if item.is_dir():
+                # Skip thumbnail folders (m, x, xl) to avoid unnecessary recursion
+                if item.name in ignored_thumbnail_folders:
+                    logger.debug(f"Skipping thumbnail folder: {item.name}")
+                    continue
+                
                 if self._is_image_set(item):
                     sets.append(item)
                     logger.info(f"Detected image set: {item.name}")
