@@ -114,7 +114,7 @@ class UploadConfig:
     grid_size_long: int = 5    # > 15 min
     # Thresholds in seconds
     tiny_threshold: int = 60       # 1 minute
-    long_threshold: int = 900      # 15 minutes
+    long_threshold: int = 600      # 15 minutes
     
     def get_grid_size(self, duration: float) -> int:
         """
@@ -124,8 +124,12 @@ class UploadConfig:
         - 1-15 min: 4x4
         - > 15 min: 5x5
         """
-        if duration < self.tiny_threshold:
-            return self.grid_size_tiny
-        elif duration >= self.long_threshold:
-            return self.grid_size_long
-        return self.grid_size_short
+        if duration < 60:
+            return 3
+        elif duration < 5 * 60:
+            return 4
+        elif duration < 20 * 60:
+            return 5
+        else:
+            return 6
+

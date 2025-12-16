@@ -42,8 +42,8 @@ class PreviewService:
         return await generate_video_grid(
             video_path=video_path,
             grid_size=grid_size,
-            max_size=320,
-            quality=80
+            max_size=360,
+            quality=90
         )
     
     def get_preview_name(self, source_id: str) -> str:
