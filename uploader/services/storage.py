@@ -245,7 +245,7 @@ class StorageService:
                 folder_handle = await self._get_or_create_folder(dest_path)
                 
                 if not folder_handle:
-                    logger.error(f"[storage] Failed to get/create folder: {dest_path}")
+                    logger.error(f"Failed to get/create folder: {dest_path}")
                     return None
                 
                 # Upload with the specified filename
@@ -255,19 +255,19 @@ class StorageService:
                     name=filename
                 )
                 
-                logger.info(f"[storage] Uploaded preview to {dest_path}/{filename}")
+                logger.debug(f"Uploaded preview to {dest_path}/{filename}")
                 return node.handle if node else None
             else:
                 # Backward compatibility: upload to .previews folder
                 if not source_id:
-                    logger.error("[storage] source_id required for backward compatibility")
+                    logger.error("source_id required for backward compatibility")
                     return None
                 
                 # Get or create .previews folder
                 folder_handle = await self._ensure_preview_folder()
                 
                 if not folder_handle:
-                    logger.error("[storage] Failed to get/create .previews folder")
+                    logger.error("Failed to get/create .previews folder")
                     return None
                 
                 # Upload with source_id as name
@@ -278,12 +278,14 @@ class StorageService:
                     name=preview_name
                 )
                 
-                logger.info(f"[storage] Uploaded preview to /.previews/{preview_name}")
-                return node.handle if node else None
+                logger.debug(f"Uploaded preview to /.previews/{preview_name}")
+                if not node:
+                    raise Exception("Upload failed, node is None")
+                return node.handle
             
         except Exception as e:
-            logger.error(f"[storage] Upload preview error: {e}")
-            return None
+            logger.error(f"Upload preview error: {e}")
+            raise e
     
     async def _ensure_preview_folder(self) -> Optional[str]:
         """
@@ -307,9 +309,9 @@ class StorageService:
                 if root:
                     folder = await self._client.create_folder(".previews", root.handle)
                     self._preview_folder_handle = folder.handle
-                    print(f"[storage] Created /.previews folder")
+                    logger.debug(f"Created /.previews folder")
             
             return self._preview_folder_handle
         except Exception as e:
-            print(f"[storage] Error creating .previews folder: {e}")
-            return None
+            logger.error(f"Error creating .previews folder: {e}")
+            raise e

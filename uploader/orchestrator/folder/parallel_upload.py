@@ -91,7 +91,7 @@ class ParallelUploadCoordinator:
         completed = 0
         for task in asyncio.as_completed(tasks):
             if process and process.is_cancelled:
-                logger.info("Upload cancelled by user")
+                logger.debug("Upload cancelled by user")
                 await self._cancel_remaining_tasks(tasks)
                 break
             
@@ -121,9 +121,9 @@ class ParallelUploadCoordinator:
             if failed_previews > 0:
                 logger.warning(f"Preview generation: {successful_previews} successful, {failed_previews} failed")
             else:
-                logger.info(f"All {successful_previews} preview(s) generated successfully")
+                logger.debug(f"All {successful_previews} preview(s) generated successfully")
         
-        logger.info(f"Upload complete: {uploaded} files, {len(self._preview_tasks)} previews")
+        logger.debug(f"Upload complete: {uploaded} files, {len(self._preview_tasks)} previews")
         
         return results
 
@@ -162,7 +162,7 @@ class ParallelUploadCoordinator:
         
         async with semaphore:
             file_size_mb = file_size / (1024 * 1024) if file_size > 0 else file_path.stat().st_size / (1024 * 1024)
-            logger.info(f"[{index}/{total_files}] Uploading ({size_category}): {file_path.name} ({file_size_mb:.2f} MB)")
+            logger.debug(f"[{index}/{total_files}] Uploading ({size_category}): {file_path.name} ({file_size_mb:.2f} MB)")
             
             try:
                 # Initialize file tracking
@@ -203,7 +203,7 @@ class ParallelUploadCoordinator:
                     await self._complete_file_tracking(process, file_path, result)
                 
                 status = "✓ Success" if result.success else "✗ Failed"
-                logger.info(f"[{index}/{total_files}] {status}: {file_path.name}")
+                logger.debug(f"[{index}/{total_files}] {status}: {file_path.name}")
                 
                 return result
                 
