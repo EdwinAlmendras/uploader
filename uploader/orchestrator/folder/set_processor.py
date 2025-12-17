@@ -25,6 +25,7 @@ from uploader.orchestrator.models import UploadResult
 from uploader.models import UploadConfig
 from mediakit.analyzer import generate_id
 from mediakit.image.processor import ImageProcessor
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
