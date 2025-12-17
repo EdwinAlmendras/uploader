@@ -1,7 +1,10 @@
 from pathlib import Path
 from typing import Optional, Tuple
+from datetime import datetime
+import mimetypes
 from uploader.services import AnalyzerService, MetadataRepository, StorageService
 from uploader.orchestrator.models import UploadResult
+from uploader.services.resume import blake3_file
 from mediakit import is_video, is_image
 from mediakit.analyzer import generate_id
 from uploader.orchestrator.preview_handler import PreviewHandler
@@ -93,8 +96,50 @@ class FileProcessor:
                 # Images don't have preview handles (method accepts None as default)
                 return (UploadResult.ok(source_id, file_path.name, handle, None), None, None)  # type: ignore[arg-type]
             
-            logger.warning("Unknown file type for %s", file_path.name)
-            return (UploadResult.fail(file_path.name, "Unknown file type"), None, None)
+            else:
+                # Handle other supported file types (PDF, HTML, DOCX, TXT, SRT, etc.)
+                logger.info("Processing other file type: %s", file_path.name)
+                
+                # Get file stats
+                stat = file_path.stat()
+                mtime = datetime.fromtimestamp(stat.st_mtime)
+                ctime = datetime.fromtimestamp(stat.st_ctime)
+                
+                # Get MIME type
+                mimetype, _ = mimetypes.guess_type(str(file_path))
+                if not mimetype:
+                    # Fallback for common types
+                    ext_to_mime = {
+                        '.pdf': 'application/pdf',
+                        '.html': 'text/html',
+                        '.htm': 'text/html',
+                        '.xls': 'application/vnd.ms-excel',
+                        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        '.doc': 'application/msword',
+                        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        '.txt': 'text/plain',
+                        '.srt': 'text/plain'
+                    }
+                    mimetype = ext_to_mime.get(file_path.suffix.lower(), 'application/octet-stream')
+                
+                # Calculate blake3 hash
+                logger.info("Calculating hash for %s...", file_path.name)
+                file_hash = await blake3_file(file_path)
+                
+                # Create basic metadata (no analysis needed for these files)
+                tech_data = {
+                    "source_id": source_id,
+                    "filename": file_path.name,
+                    "mimetype": mimetype,
+                    "mtime": mtime,
+                    "ctime": ctime,
+                    "blake3_hash": file_hash
+                }
+                
+                await self._repository.save_document(tech_data)
+                logger.info("Saved metadata to API for %s (hash: %s...)", file_path.name, file_hash[:16])
+                logger.info("Successfully completed %s", file_path.name)
+                return (UploadResult.ok(source_id, file_path.name, handle, None), None, None)  # type: ignore[arg-type]
         
         except Exception as e:
             error_msg = str(e) if str(e) else f"{type(e).__name__}: {repr(e)}"

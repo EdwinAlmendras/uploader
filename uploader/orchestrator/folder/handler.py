@@ -84,6 +84,7 @@ class FolderUploadHandler:
             )
         
         total = 0
+        root_handle = None  # Initialize root_handle
         
         try:
             if process and process.is_cancelled:
@@ -137,9 +138,52 @@ class FolderUploadHandler:
             
             all_results = []
             
+            # Pre-create all folder structure needed (for both sets and individual files)
+            # This avoids creating the same folders multiple times
+            logger.info("Pre-creating folder structure...")
+            root_handle = await self._storage.create_folder(dest_path)
+            
+            unique_subfolders = set()
+            
+            # Collect folder paths needed for sets
+            if sets:
+                for set_folder in sets:
+                    set_rel_path = set_folder.relative_to(folder_path)
+                    if set_rel_path.parent != Path("."):
+                        parts = set_rel_path.parent.parts
+                        for i in range(1, len(parts) + 1):
+                            intermediate_parts = parts[:i]
+                            intermediate_str = "/".join(intermediate_parts)
+                            full_intermediate = f"{dest_path}/{intermediate_str}"
+                            unique_subfolders.add(full_intermediate)
+            
+            # Collect folder paths needed for individual files (if any pending)
+            # Note: We don't know pending_files yet, so we'll collect folders for all individual files
+            # and the deduplication process will handle which ones actually need upload
+            if individual_files:
+                for file_path in individual_files:
+                    rel_path = file_path.relative_to(folder_path)
+                    if rel_path.parent != Path("."):
+                        parts = rel_path.parent.parts
+                        for i in range(1, len(parts) + 1):
+                            intermediate_parts = parts[:i]
+                            intermediate_str = "/".join(intermediate_parts)
+                            full_intermediate = f"{dest_path}/{intermediate_str}"
+                            unique_subfolders.add(full_intermediate)
+            
+            # Create all unique subfolders once
+            if unique_subfolders:
+                logger.info(f"Creating {len(unique_subfolders)} unique subfolder(s) before processing...")
+                for subfolder_path in sorted(unique_subfolders):
+                    try:
+                        await self._storage.create_folder(subfolder_path)
+                    except Exception as e:
+                        logger.debug(f"Folder {subfolder_path} might already exist or error: {e}")
+            
             # Step 1: Process sets first (thumbnails, POST, 7z, upload sequentially)
             if sets:
                 logger.info(f"Processing {len(sets)} image set(s)...")
+                
                 for idx, set_folder in enumerate(sets, 1):
                     if process and process.is_cancelled:
                         logger.info("Upload cancelled by user")
@@ -154,9 +198,21 @@ class FolderUploadHandler:
                         )
                     
                     try:
+                        # Calculate relative path from folder_path to set_folder to preserve subfolder structure
+                        set_rel_path = set_folder.relative_to(folder_path)
+                        
+                        # Calculate destination path including subfolders (like we do for individual files)
+                        if set_rel_path.parent != Path("."):
+                            parent_str = set_rel_path.parent.as_posix()  # Always uses / separator
+                            set_dest_path = f"{dest_path}/{parent_str}"
+                        else:
+                            set_dest_path = dest_path
+                        
+                        # Folder structure already created above, no need to create again
+                        
                         set_result, image_results = await self._set_processor.process_set(
                             set_folder,
-                            dest_path,
+                            set_dest_path,  # Use calculated destination path with subfolders
                             progress_callback
                         )
                         all_results.append(set_result)
@@ -345,37 +401,14 @@ class FolderUploadHandler:
                     if process:
                         await process.set_phase(ProcessPhase.UPLOADING, f"Uploading {len(pending_files)} files...")
                     
-                    # Create root folder first
-                    root_handle = await self._storage.create_folder(dest_path)
-                    
-                    # Pre-create folder structure
-                    logger.info("Pre-creating folder structure for individual files...")
-                    unique_subfolders = set()
-                    for file_path, rel_path in pending_files:
-                        if rel_path.parent != Path("."):
-                            parts = rel_path.parent.parts
-                            for i in range(1, len(parts) + 1):
-                                intermediate_parts = parts[:i]
-                                intermediate_str = "/".join(intermediate_parts)
-                                full_intermediate = f"{dest_path}/{intermediate_str}"
-                                unique_subfolders.add(full_intermediate)
-                    
-                    if unique_subfolders:
-                        logger.info(f"Creating {len(unique_subfolders)} subfolder(s) before upload...")
-                        for subfolder_path in sorted(unique_subfolders):
-                            try:
-                                await self._storage.create_folder(subfolder_path)
-                            except Exception as e:
-                                logger.warning(f"Failed to create subfolder {subfolder_path}: {e}")
-                    
+                    # Root folder and subfolders already created at the beginning, no need to create again
                     logger.info("Folder structure ready, starting parallel uploads for individual files...")
                     
                     file_results = await self._upload_coordinator.upload(
                         pending_files, dest_path, total, progress_callback, process
                     )
                     all_results.extend(file_results)
-                else:
-                    root_handle = await self._storage.create_folder(dest_path) if sets else None
+                # Root folder already created at the beginning
             
             uploaded = sum(1 for r in all_results if r.success)
             failed = sum(1 for r in all_results if not r.success)

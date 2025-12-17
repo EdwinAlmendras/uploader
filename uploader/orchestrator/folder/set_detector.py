@@ -13,6 +13,13 @@ from mediakit import is_video, is_image
 
 logger = logging.getLogger(__name__)
 
+# Supported file extensions for individual files (in addition to videos and images)
+SUPPORTED_EXTENSIONS = {'.pdf', '.html', '.htm', '.xls', '.xlsx', '.doc', '.docx', '.txt', '.srt'}
+
+def is_supported_file(path: Path) -> bool:
+    """Check if file is a supported type (video, image, or other supported document)."""
+    return is_video(path) or is_image(path) or path.suffix.lower() in SUPPORTED_EXTENSIONS
+
 
 class SetDetector:
     """Detects and prepares image sets for processing."""
@@ -56,8 +63,8 @@ class SetDetector:
                     sets.extend(sub_sets)
                     individual_files.extend(sub_files)
             elif item.is_file():
-                # Check if it's a media file
-                if is_video(item) or is_image(item):
+                # Check if it's a supported file (video, image, or other supported document)
+                if is_supported_file(item):
                     individual_files.append(item)
         
         return sets, individual_files
