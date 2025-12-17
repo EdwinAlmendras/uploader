@@ -292,16 +292,11 @@ class PipelineDeduplicator:
             
             if is_small:
                 # Accumulate all small files for batch processing (whether from cache or not)
-                # We batch them to reduce HTTP requests, but can process cached ones more aggressively
                 small_file_buffer.append(result)
                 
-                # Process buffer if it's full OR if we have enough cached hashes ready
-                # Check if we have enough cached items in buffer to warrant a batch check
-                cached_in_buffer = sum(1 for r in small_file_buffer if r.from_cache)
-                
-                # Process if buffer is full, or if we have a good mix (at least 20 items, and most are cached)
-                if (len(small_file_buffer) >= self.BATCH_CHECK_SIZE or 
-                    (len(small_file_buffer) >= 20 and cached_in_buffer >= len(small_file_buffer) * 0.8)):
+                # Only process buffer when it's full (50 items)
+                # This ensures we maximize batch size and reduce HTTP requests
+                if len(small_file_buffer) >= self.BATCH_CHECK_SIZE:
                     await self._process_small_file_batch(small_file_buffer, progress_state)
                     small_file_buffer.clear()
             else:
