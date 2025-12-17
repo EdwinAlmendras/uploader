@@ -67,7 +67,7 @@ class PipelineDeduplicator:
     """
     
     # Threshold: 5MB in bytes - files smaller than this use batch checks
-    SMALL_FILE_THRESHOLD = 5 * 1024 * 1024  # 5MB
+    SMALL_FILE_THRESHOLD = 200 * 1024 * 1024  # 5MB
     BATCH_CHECK_SIZE = 50  # Number of small file hashes to accumulate before batch check
 
     def __init__(
@@ -300,12 +300,8 @@ class PipelineDeduplicator:
                     await self._process_small_file_batch(small_file_buffer, progress_state)
                     small_file_buffer.clear()
             else:
-                # Large file arrived - process accumulated small files first, then this large file
-                if small_file_buffer:
-                    await self._process_small_file_batch(small_file_buffer, progress_state)
-                    small_file_buffer.clear()
-                
-                # Process large files immediately (one by one)
+                # Large file arrived - process it individually WITHOUT flushing the small file buffer
+                # This allows the small file buffer to continue accumulating for larger batches
                 await self._check_single_file(result, progress_state)
         
         logger.debug("Check worker finished - processed all files")
