@@ -120,46 +120,41 @@ class ImageSetProcessor:
             if archive_file_for_hash and archive_file_for_hash.exists():
                 try:
                     # Calculate blake3 hash
-                    logger.info(f"Calculating hash for archive: {archive_file_for_hash.name}")
+                    logger.debug(f"Calculating hash for archive: {archive_file_for_hash.name}")
                     if progress_callback:
                         progress_callback(f"Calculating archive hash...", 10, 100)
                     
                     archive_hash = await blake3_file(archive_file_for_hash)
                     
-                    logger.info(f"Archive hash: {archive_hash}")
-                    # Check if exists in DB
+                    logger.debug(f"Archive hash: {archive_hash}")
                     
                     if self._repository:
                         existing_hashes = await self._repository.check_exists_batch([archive_hash])
-                        logger.info(f"Existing hashes: {existing_hashes}")
+                        logger.debug(f"Existing hashes: {existing_hashes}")
                         if archive_hash in existing_hashes:
                             doc_info = existing_hashes[archive_hash]
-                            logger.info(f"Doc info: {doc_info}")
+                            logger.debug(f"Doc info: {doc_info}")
                             # Handle both old and new format
                             if isinstance(doc_info, dict):
                                 existing_source_id = doc_info.get("source_id")
-                                logger.info(f"Existing source ID: {existing_source_id}")
+                                logger.debug(f"Existing source ID: {existing_source_id}")
                                 existing_mega_handle = doc_info.get("mega_handle")
-                                logger.info(f"Existing mega handle: {existing_mega_handle}")
+                                logger.debug(f"Existing mega handle: {existing_mega_handle}")
                             else:
                                 existing_source_id = doc_info
-                                logger.info(f"Existing source ID: {existing_source_id}")
+                                logger.debug(f"Existing source ID: {existing_source_id}")
                             
                             logger.info(
                                 f"Archive hash exists in DB (source_id: {existing_source_id})"
                             )
                             
-                            # Verify it also exists in MEGA
                             if existing_source_id:
                                 exists_in_mega = False
                                 try:
                                     if isinstance(self._storage, ManagedStorageService):
-                                        logger.debug(f"Checking if archive exists in MEGA using ManagedStorageService")
                                         exists_in_mega = await self._storage.manager.find_by_mega_id(existing_source_id) is not None
                                     else:
-                                        logger.debug(f"Checking if archive exists in MEGA using StorageService")
                                         exists_in_mega = await self._storage.exists_by_mega_id(existing_source_id)
-                                        logger.debug(f"Archive exists in MEGA: {exists_in_mega}")
                                 except Exception as e:
                                     logger.warning(f"MEGA check failed for archive: {e}")
                                 
