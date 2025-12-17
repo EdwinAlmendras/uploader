@@ -291,19 +291,19 @@ class PipelineDeduplicator:
             is_small = result.file_size < self.SMALL_FILE_THRESHOLD
             
             if is_small:
-                # If hash is from cache, process immediately (no need to wait for batch)
-                # Otherwise accumulate for batch processing
-                if result.from_cache:
-                    # Process immediately - hash was already available, no need to wait
-                    await self._check_single_file(result, progress_state)
-                else:
-                    # Accumulate small files for batch processing
-                    small_file_buffer.append(result)
-                    
-                    # Process buffer if it's full
-                    if len(small_file_buffer) >= self.BATCH_CHECK_SIZE:
-                        await self._process_small_file_batch(small_file_buffer, progress_state)
-                        small_file_buffer.clear()
+                # Accumulate all small files for batch processing (whether from cache or not)
+                # We batch them to reduce HTTP requests, but can process cached ones more aggressively
+                small_file_buffer.append(result)
+                
+                # Process buffer if it's full OR if we have enough cached hashes ready
+                # Check if we have enough cached items in buffer to warrant a batch check
+                cached_in_buffer = sum(1 for r in small_file_buffer if r.from_cache)
+                
+                # Process if buffer is full, or if we have a good mix (at least 20 items, and most are cached)
+                if (len(small_file_buffer) >= self.BATCH_CHECK_SIZE or 
+                    (len(small_file_buffer) >= 20 and cached_in_buffer >= len(small_file_buffer) * 0.8)):
+                    await self._process_small_file_batch(small_file_buffer, progress_state)
+                    small_file_buffer.clear()
             else:
                 # Large file arrived - process accumulated small files first, then this large file
                 if small_file_buffer:
