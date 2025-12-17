@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Dict, Any
 import traceback
 from uploader.orchestrator.preview_handler import PreviewHandler
 from uploader.orchestrator.file_collector import FileCollector
@@ -184,6 +184,9 @@ class FolderUploadHandler:
             if sets:
                 logger.info(f"Processing {len(sets)} image set(s)...")
                 
+                # Pre-check sets in batch to avoid individual DB checks
+                set_check_results = await self._batch_check_sets(sets, folder_path)
+                
                 for idx, set_folder in enumerate(sets, 1):
                     if process and process.is_cancelled:
                         logger.info("Upload cancelled by user")
@@ -210,10 +213,14 @@ class FolderUploadHandler:
                         
                         # Folder structure already created above, no need to create again
                         
+                        # Get pre-check info for this set
+                        set_check_info = set_check_results.get(set_folder, {})
+                        
                         set_result, image_results = await self._set_processor.process_set(
                             set_folder,
                             set_dest_path,  # Use calculated destination path with subfolders
-                            progress_callback
+                            progress_callback,
+                            pre_check_info=set_check_info if set_check_info else None
                         )
                         all_results.append(set_result)
                         all_results.extend(image_results)
@@ -263,7 +270,6 @@ class FolderUploadHandler:
                         analyzer=self._analyzer if self._preview_checker else None,
                     )
                     
-                    # Setup callbacks for hash progress
                     if process:
                         async def on_hash_start(filename):
                             await process.emit_hash_start(filename)
@@ -448,4 +454,172 @@ class FolderUploadHandler:
                 results=[],
                 error=error_msg
             )
+    
+    async def _batch_check_sets(self, sets: List[Path], folder_path: Path) -> Dict[Path, Dict[str, any]]:
+        """
+        Batch check sets for existence in DB/MEGA.
+        Processes sets with cached hashes in batches immediately, without waiting for all hashes.
+        
+        Returns:
+            Dict mapping set_folder -> {
+                'hash': str | None,
+                'source_id': str | None,
+                'mega_handle': str | None,
+                'exists_in_both': bool
+            }
+        """
+        from uploader.services.resume import blake3_file
+        
+        BATCH_SIZE = 50  # Process sets in batches of 50
+        results = {}
+        cached_batch = []  # Sets with hashes from cache (can be checked immediately)
+        cached_hash_to_set = {}  # Map hash -> (set_folder, archive_path) for cached hashes
+        pending_sets = []  # Sets that need hash calculation
+        
+        # Separate sets into cached (ready) and pending (need calculation)
+        for set_folder in sets:
+            set_name = set_folder.name
+            archive_name = f"{set_name}.7z"
+            existing_archive_path = set_folder.parent / "files" / archive_name
+            
+            if existing_archive_path.exists():
+                # Check cache first
+                archive_hash = None
+                from_cache = False
+                
+                if self._hash_cache:
+                    cached_hash = await self._hash_cache.get(existing_archive_path)
+                    if cached_hash:
+                        archive_hash = cached_hash
+                        from_cache = True
+                
+                if archive_hash:
+                    # Hash from cache - can be checked immediately
+                    cached_batch.append((set_folder, existing_archive_path, archive_hash))
+                    cached_hash_to_set[archive_hash] = set_folder
+                else:
+                    # Need to calculate hash
+                    pending_sets.append((set_folder, existing_archive_path))
+            else:
+                results[set_folder] = {}
+        
+        # Process cached sets in batches
+        async def process_batch(cached_items: List):
+            """Process a batch of sets with cached hashes."""
+            batch_hashes = []
+            hash_to_set_map = {}
+            
+            for set_folder, archive_path, archive_hash in cached_items:
+                batch_hashes.append(archive_hash)
+                hash_to_set_map[archive_hash] = set_folder
+                results[set_folder] = {'hash': archive_hash, 'from_cache': True}
+            
+            if batch_hashes and self._repository:
+                try:
+                    existing_hashes = await self._repository.check_exists_batch(batch_hashes)
+                    logger.debug(f"Batch check for sets: {len(existing_hashes)} existing out of {len(batch_hashes)} checked")
+                    
+                    # Process results and verify in MEGA
+                    for archive_hash, set_folder in hash_to_set_map.items():
+                        if archive_hash in existing_hashes:
+                            doc_info = existing_hashes[archive_hash]
+                            source_id = None
+                            mega_handle = None
+                            
+                            if isinstance(doc_info, dict):
+                                source_id = doc_info.get("source_id")
+                                mega_handle = doc_info.get("mega_handle")
+                            else:
+                                source_id = doc_info
+                            
+                            if source_id:
+                                # Verify in MEGA
+                                exists_in_mega = False
+                                try:
+                                    if isinstance(self._storage, ManagedStorageService):
+                                        exists_in_mega = await self._storage.manager.find_by_mega_id(source_id) is not None
+                                    else:
+                                        exists_in_mega = await self._storage.exists_by_mega_id(source_id)
+                                except Exception as e:
+                                    logger.debug(f"MEGA check failed for set {set_folder.name}: {e}")
+                                
+                                results[set_folder].update({
+                                    'source_id': source_id,
+                                    'mega_handle': mega_handle,
+                                    'exists_in_both': exists_in_mega
+                                })
+                            else:
+                                results[set_folder]['exists_in_both'] = False
+                        else:
+                            results[set_folder]['exists_in_both'] = False
+                except Exception as e:
+                    logger.warning(f"Batch check failed for sets: {e}")
+        
+        # Process cached sets in batches
+        for i in range(0, len(cached_batch), BATCH_SIZE):
+            batch = cached_batch[i:i + BATCH_SIZE]
+            await process_batch(batch)
+        
+        # Now process pending sets (need hash calculation)
+        if pending_sets:
+            pending_batch_hashes = []
+            pending_hash_to_set = {}
+            
+            for set_folder, existing_archive_path in pending_sets:
+                try:
+                    archive_hash = await blake3_file(existing_archive_path)
+                    # Save to cache
+                    if self._hash_cache:
+                        await self._hash_cache.set(existing_archive_path, archive_hash)
+                    
+                    pending_batch_hashes.append(archive_hash)
+                    pending_hash_to_set[archive_hash] = set_folder
+                    results[set_folder] = {'hash': archive_hash, 'from_cache': False}
+                except Exception as e:
+                    logger.debug(f"Failed to calculate hash for {existing_archive_path.name}: {e}")
+                    results[set_folder] = {}
+            
+            # Batch check pending sets
+            if pending_batch_hashes and self._repository:
+                try:
+                    existing_hashes = await self._repository.check_exists_batch(pending_batch_hashes)
+                    logger.debug(f"Batch check for pending sets: {len(existing_hashes)} existing out of {len(pending_batch_hashes)} checked")
+                    
+                    # Process results and verify in MEGA
+                    for archive_hash, set_folder in pending_hash_to_set.items():
+                        if archive_hash in existing_hashes:
+                            doc_info = existing_hashes[archive_hash]
+                            source_id = None
+                            mega_handle = None
+                            
+                            if isinstance(doc_info, dict):
+                                source_id = doc_info.get("source_id")
+                                mega_handle = doc_info.get("mega_handle")
+                            else:
+                                source_id = doc_info
+                            
+                            if source_id:
+                                # Verify in MEGA
+                                exists_in_mega = False
+                                try:
+                                    if isinstance(self._storage, ManagedStorageService):
+                                        exists_in_mega = await self._storage.manager.find_by_mega_id(source_id) is not None
+                                    else:
+                                        exists_in_mega = await self._storage.exists_by_mega_id(source_id)
+                                except Exception as e:
+                                    logger.debug(f"MEGA check failed for set {set_folder.name}: {e}")
+                                
+                                results[set_folder].update({
+                                    'source_id': source_id,
+                                    'mega_handle': mega_handle,
+                                    'exists_in_both': exists_in_mega
+                                })
+                            else:
+                                results[set_folder]['exists_in_both'] = False
+                        else:
+                            results[set_folder]['exists_in_both'] = False
+                except Exception as e:
+                    logger.warning(f"Batch check failed for pending sets: {e}")
+        
+        return results
 

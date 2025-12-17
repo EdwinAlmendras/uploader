@@ -61,7 +61,8 @@ class ImageSetProcessor:
         self,
         set_folder: Path,
         dest_path: str,
-        progress_callback: Optional[Callable] = None
+        progress_callback: Optional[Callable] = None,
+        pre_check_info: Optional[Dict[str, Any]] = None
     ) -> Tuple[UploadResult, List[UploadResult]]:
         """
         Process a complete image set.
@@ -96,63 +97,77 @@ class ImageSetProcessor:
                     []
                 )
             
-            archive_name = f"{set_name}.7z"
-            existing_archive_path = set_folder.parent / "files" / archive_name
-            archive_file_for_hash = None
-            
-            if existing_archive_path.exists():
-                archive_file_for_hash = existing_archive_path
-            
-            # If we have an archive file, ceck if it already exists
+            # Use pre-check info if provided (from batch check), otherwise check individually
             existing_source_id = None
             existing_mega_handle = None
             archive_exists_in_both = False
-            archive_hash = None  # Will store the hash for later use
+            archive_hash = None
             
-            if archive_file_for_hash and archive_file_for_hash.exists():
-                try:
-                    # Calculate blake3 hash
-                    logger.debug(f"Calculating hash for archive: {archive_file_for_hash.name}")
-                    if progress_callback:
-                        progress_callback(f"Calculating archive hash...", 10, 100)
-                    
-                    archive_hash = await blake3_file(archive_file_for_hash)
-                    
-                    logger.debug(f"Archive hash: {archive_hash}")
-                    
-                    if self._repository:
-                        existing_hashes = await self._repository.check_exists_batch([archive_hash])
-                        logger.debug(f"Existing hashes: {existing_hashes}")
-                        if archive_hash in existing_hashes:
-                            doc_info = existing_hashes[archive_hash]
-                            logger.debug(f"Doc info: {doc_info}")
-                            # Handle both old and new format
-                            if isinstance(doc_info, dict):
-                                existing_source_id = doc_info.get("source_id")
-                                logger.debug(f"Existing source ID: {existing_source_id}")
-                                existing_mega_handle = doc_info.get("mega_handle")
-                                logger.debug(f"Existing mega handle: {existing_mega_handle}")
-                            else:
-                                existing_source_id = doc_info
-                                logger.debug(f"Existing source ID: {existing_source_id}")
-                            
-                            
-                            if existing_source_id:
-                                exists_in_mega = False
-                                try:
-                                    if isinstance(self._storage, ManagedStorageService):
-                                        exists_in_mega = await self._storage.manager.find_by_mega_id(existing_source_id) is not None
-                                    else:
-                                        exists_in_mega = await self._storage.exists_by_mega_id(existing_source_id)
-                                except Exception as e:
-                                    logger.warning(f"MEGA check failed for archive: {e}")
+            if pre_check_info and pre_check_info.get('exists_in_both'):
+                # Use batch check results
+                existing_source_id = pre_check_info.get('source_id')
+                existing_mega_handle = pre_check_info.get('mega_handle')
+                archive_hash = pre_check_info.get('hash')
+                archive_exists_in_both = True
+            else:
+                # Check individually (legacy behavior or if pre_check_info not provided)
+                archive_name = f"{set_name}.7z"
+                existing_archive_path = set_folder.parent / "files" / archive_name
+                archive_file_for_hash = None
+                
+                if existing_archive_path.exists():
+                    archive_file_for_hash = existing_archive_path
+                
+                # If we have an archive file, check if it already exists
+                if archive_file_for_hash and archive_file_for_hash.exists():
+                    try:
+                        # Calculate blake3 hash
+                        logger.debug(f"Calculating hash for archive: {archive_file_for_hash.name}")
+                        if progress_callback:
+                            progress_callback(f"Calculating archive hash...", 10, 100)
+                        
+                        archive_hash = await blake3_file(archive_file_for_hash)
+                        
+                        logger.debug(f"Archive hash: {archive_hash}")
+                        
+                        if self._repository:
+                            existing_hashes = await self._repository.check_exists_batch([archive_hash])
+                            logger.debug(f"Existing hashes: {existing_hashes}")
+                            if archive_hash in existing_hashes:
+                                doc_info = existing_hashes[archive_hash]
+                                logger.debug(f"Doc info: {doc_info}")
+                                # Handle both old and new format
+                                if isinstance(doc_info, dict):
+                                    existing_source_id = doc_info.get("source_id")
+                                    logger.debug(f"Existing source ID: {existing_source_id}")
+                                    existing_mega_handle = doc_info.get("mega_handle")
+                                    logger.debug(f"Existing mega handle: {existing_mega_handle}")
+                                else:
+                                    existing_source_id = doc_info
+                                    logger.debug(f"Existing source ID: {existing_source_id}")
                                 
-                                if exists_in_mega:
-                                    archive_exists_in_both = True
-                    else:
-                        logger.warning(f"Repository not initialized, skipping DB check")
-                except Exception as e:
-                    logger.warning(f"Error checking archive existence: {e}", exc_info=True)
+                                
+                                if existing_source_id:
+                                    exists_in_mega = False
+                                    try:
+                                        if isinstance(self._storage, ManagedStorageService):
+                                            exists_in_mega = await self._storage.manager.find_by_mega_id(existing_source_id) is not None
+                                        else:
+                                            exists_in_mega = await self._storage.exists_by_mega_id(existing_source_id)
+                                    except Exception as e:
+                                        logger.warning(f"MEGA check failed for archive: {e}")
+                                    
+                                    if exists_in_mega:
+                                        archive_exists_in_both = True
+                        else:
+                            logger.warning(f"Repository not initialized, skipping DB check")
+                    except Exception as e:
+                        logger.warning(f"Error checking archive existence: {e}", exc_info=True)
+                elif pre_check_info:
+                    # Use hash from batch check even if archive doesn't exist locally
+                    archive_hash = pre_check_info.get('hash')
+                    existing_source_id = pre_check_info.get('source_id')
+                    existing_mega_handle = pre_check_info.get('mega_handle')
             
             # If archive exists in both DB and MEGA, skip everything and return
             if archive_exists_in_both and existing_source_id:
