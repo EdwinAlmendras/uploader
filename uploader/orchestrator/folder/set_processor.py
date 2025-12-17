@@ -82,7 +82,7 @@ class ImageSetProcessor:
             Tuple of (set_upload_result, list of image_upload_results)
         """
         set_name = set_folder.name
-        logger.info(f"Processing image set: {set_name}")
+        logger.debug(f"Processing image set: {set_name}")
         
         if progress_callback:
             progress_callback(f"Processing set: {set_name}...", 0, 100)
@@ -96,22 +96,14 @@ class ImageSetProcessor:
                     []
                 )
             
-            logger.info(f"Found {len(images)} images in set {set_name}")
-            
-            # Step 1.5: Check for existing 7z archive and verify if already uploaded
             archive_name = f"{set_name}.7z"
             existing_archive_path = set_folder.parent / "files" / archive_name
-            
-            # Check if 7z exists in files subfolder
             archive_file_for_hash = None
             
             if existing_archive_path.exists():
-                logger.info(f"Found existing 7z archive at: {existing_archive_path}")
                 archive_file_for_hash = existing_archive_path
-            else:
-                logger.info(f"No existing 7z archive found in files/ subfolder, will create new one during normal flow")
             
-            # If we have an archive file, check if it already exists
+            # If we have an archive file, ceck if it already exists
             existing_source_id = None
             existing_mega_handle = None
             archive_exists_in_both = False
@@ -144,9 +136,6 @@ class ImageSetProcessor:
                                 existing_source_id = doc_info
                                 logger.debug(f"Existing source ID: {existing_source_id}")
                             
-                            logger.info(
-                                f"Archive hash exists in DB (source_id: {existing_source_id})"
-                            )
                             
                             if existing_source_id:
                                 exists_in_mega = False
@@ -160,61 +149,33 @@ class ImageSetProcessor:
                                 
                                 if exists_in_mega:
                                     archive_exists_in_both = True
-                                    logger.debug(
-                                        f"Archive exists in both DB and MEGA (source_id: {existing_source_id}) - SKIPPING entire process"
-                                    )
-                                else:
-                                    logger.debug(
-                                        f"Archive exists in DB but NOT in MEGA (source_id: {existing_source_id}) - will re-upload"
-                                    )
-                
                     else:
                         logger.warning(f"Repository not initialized, skipping DB check")
-                
                 except Exception as e:
                     logger.warning(f"Error checking archive existence: {e}", exc_info=True)
             
             # If archive exists in both DB and MEGA, skip everything and return
             if archive_exists_in_both and existing_source_id:
-                logger.info(f"Set {set_name} already processed, skipping all operations")
                 return (
                     UploadResult.ok(existing_source_id, set_name, existing_mega_handle, None),
                     []  # No image results since we skipped processing
                 )
-            
-            # Step 1.1: Select cover (first vertical image)
             cover = self._selector.select_cover(images)
-            logger.debug(f"Selected cover: {cover.name} (first vertical image)")
-            
-            # Generate thumbnails (320px and 1024px) and calculate perceptual features
-            # Returns dict mapping image_path -> (phash, avg_color_lab)
             perceptual_features = await self._generate_thumbnails(set_folder, images, progress_callback)
-            
-            # Step 1.2: Generate grid preview for the set
-            logger.info("Generating grid preview for set...")
             if progress_callback:
                 progress_callback(f"Generating grid preview...", 25, 100)
-            
             grid_preview_path = await self._generate_grid_preview(set_folder)
             
-            # Step 2: Generate or use existing set document ID (for the 7z)
             if existing_source_id and not archive_exists_in_both:
-                # Use existing source_id if archive exists in DB but not in MEGA (re-upload)
                 set_source_id = existing_source_id
                 logger.debug(f"Using existing set source_id for re-upload: {set_source_id}")
             else:
-                # Generate new source_id for new archive
                 set_source_id = generate_id()
                 logger.debug(f"Generated new set source_id: {set_source_id}")
-            
-            # Step 3: Process images only if we don't have an existing 7z file ready to upload
-            # If we have an existing 7z in files/ and it exists in DB but not MEGA, skip image processing
             skip_image_processing = (existing_archive_path.exists() and existing_source_id and not archive_exists_in_both)
             
             image_results = []
             if not skip_image_processing:
-                # Process all images (analyze and save to API with set_doc_id)
-                # Pass perceptual features to avoid recalculating them
                 image_results = await self._process_set_images(
                     set_folder,
                     images,
@@ -223,12 +184,12 @@ class ImageSetProcessor:
                     perceptual_features=perceptual_features
                 )
             else:
-                logger.info(f"Skipping image processing - using existing 7z file from files/ subfolder")
+                logger.debug(f"Skipping image processing - using existing 7z file from files/ subfolder")
             
             # Step 4: Use existing 7z or create new one
             if existing_archive_path.exists() and existing_source_id and not archive_exists_in_both:
                 # Use existing 7z file for upload (re-upload scenario)
-                logger.info(f"Using existing 7z archive from files/ subfolder: {existing_archive_path}")
+                logger.debug(f"Using existing 7z archive from files/ subfolder: {existing_archive_path}")
                 archive_files = [existing_archive_path]
             else:
                 # Create 7z archive (normal flow when no existing archive)
