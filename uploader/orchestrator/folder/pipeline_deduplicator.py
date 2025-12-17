@@ -39,6 +39,7 @@ class FileHashResult:
     rel_path: Path
     blake3_hash: Optional[str]
     file_size: int = 0  # File size in bytes, used to determine if batch check should be used
+    from_cache: bool = False  # Whether hash came from cache (can be processed immediately)
     error: Optional[str] = None
 
 
@@ -258,6 +259,7 @@ class PipelineDeduplicator:
                 rel_path=rel_path,
                 blake3_hash=blake3_hash,
                 file_size=file_size,
+                from_cache=from_cache,
                 error=None if blake3_hash else "Hash calculation failed"
             )
             await self._check_queue.put(result)
@@ -267,11 +269,6 @@ class PipelineDeduplicator:
         small_file_buffer: List[FileHashResult] = []
         
         while True:
-            # Process buffer if it's full or if we're done receiving files
-            if len(small_file_buffer) >= self.BATCH_CHECK_SIZE:
-                await self._process_small_file_batch(small_file_buffer, progress_state)
-                small_file_buffer.clear()
-            
             # Get next result
             result = await self._check_queue.get()
             
@@ -294,9 +291,25 @@ class PipelineDeduplicator:
             is_small = result.file_size < self.SMALL_FILE_THRESHOLD
             
             if is_small:
-                # Accumulate small files for batch processing
-                small_file_buffer.append(result)
+                # If hash is from cache, process immediately (no need to wait for batch)
+                # Otherwise accumulate for batch processing
+                if result.from_cache:
+                    # Process immediately - hash was already available, no need to wait
+                    await self._check_single_file(result, progress_state)
+                else:
+                    # Accumulate small files for batch processing
+                    small_file_buffer.append(result)
+                    
+                    # Process buffer if it's full
+                    if len(small_file_buffer) >= self.BATCH_CHECK_SIZE:
+                        await self._process_small_file_batch(small_file_buffer, progress_state)
+                        small_file_buffer.clear()
             else:
+                # Large file arrived - process accumulated small files first, then this large file
+                if small_file_buffer:
+                    await self._process_small_file_batch(small_file_buffer, progress_state)
+                    small_file_buffer.clear()
+                
                 # Process large files immediately (one by one)
                 await self._check_single_file(result, progress_state)
         

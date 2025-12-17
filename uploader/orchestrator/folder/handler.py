@@ -255,7 +255,6 @@ class FolderUploadHandler:
                     
                     logger.info("Checking individual files in database by blake3_hash (deduplication)")
                     
-                    # Use PipelineDeduplicator with hash cache for better performance and progress
                     pipeline = PipelineDeduplicator(
                         self._repository,
                         self._storage,
@@ -344,7 +343,6 @@ class FolderUploadHandler:
                     else:
                         logger.debug("After blake3_hash check: All %d files are new (not in database)", len(files_to_check_db))
                 else:
-                    # No deduplicator available, prepare all files for upload
                     pending_files = [(fp, fp.relative_to(folder_path)) for fp in files_to_check_db]
                     
                     if not self._blake3_deduplicator:

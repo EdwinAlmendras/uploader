@@ -56,9 +56,8 @@ class SetDetector:
                 
                 if self._is_image_set(item):
                     sets.append(item)
-                    logger.info(f"Detected image set: {item.name}")
+                    logger.debug(f"Detected image set: {item.name}")
                 else:
-                    # Recursively check subdirectories
                     sub_sets, sub_files = self.detect_sets(item)
                     sets.extend(sub_sets)
                     individual_files.extend(sub_files)
