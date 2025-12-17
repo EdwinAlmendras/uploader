@@ -143,6 +143,7 @@ class MetadataRepository(IMetadataRepository):
             # Dimensions
             "width": data.get("width"),
             "height": data.get("height"),
+            "rotation": data.get("rotation"),
             "sar": data.get("sar"),
             "dar": data.get("dar"),
             # Timing

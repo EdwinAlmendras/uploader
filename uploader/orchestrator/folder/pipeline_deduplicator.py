@@ -12,7 +12,7 @@ This reduces total time from (hash_time + upload_time) to max(hash_time, upload_
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Tuple, Set
+from typing import Optional, Callable, Dict, List, Tuple, Set, Any
 from dataclasses import dataclass
 
 from uploader.services.repository import MetadataRepository
@@ -38,6 +38,7 @@ class FileHashResult:
     file_path: Path
     rel_path: Path
     blake3_hash: Optional[str]
+    file_size: int = 0  # File size in bytes, used to determine if batch check should be used
     error: Optional[str] = None
 
 
@@ -58,11 +59,15 @@ class PipelineDeduplicator:
     
     Processes files through a pipeline:
     1. Hash worker: Calculates blake3 hash (one at a time)
-    2. Check worker: Checks DB for existence
+    2. Check worker: Checks DB for existence (batch for small files, individual for large)
     3. Files not found go to pending queue for upload
     
     Emits events for each phase via callbacks.
     """
+    
+    # Threshold: 5MB in bytes - files smaller than this use batch checks
+    SMALL_FILE_THRESHOLD = 5 * 1024 * 1024  # 5MB
+    BATCH_CHECK_SIZE = 50  # Number of small file hashes to accumulate before batch check
 
     def __init__(
         self,
@@ -138,7 +143,7 @@ class PipelineDeduplicator:
             self._on_progress = progress_callback
         
         total = len(files)
-        logger.info("PipelineDeduplicator: Starting pipeline for %d files", total)
+        logger.info("Starting pipeline for %d files", total)
         
         # Reset state
         self._pending_files = []
@@ -167,10 +172,7 @@ class PipelineDeduplicator:
         # Wait for all workers to complete
         await asyncio.gather(hash_task, check_task)
         
-        logger.info(
-            "PipelineDeduplicator: Completed - %d pending, %d skipped",
-            len(self._pending_files), len(self._skipped_paths)
-        )
+        logger.info("Completed - %d pending, %d skipped", len(self._pending_files), len(self._skipped_paths))
         
         return (
             self._pending_files,
@@ -207,29 +209,20 @@ class PipelineDeduplicator:
                 if cached_hash:
                     blake3_hash = cached_hash
                     from_cache = True
-                    logger.debug(
-                        "PipelineDeduplicator: Hash from cache for '%s': %s...",
-                        file_path.name, blake3_hash[:16]
-                    )
+                    logger.debug("Hash from cache for '%s': %s...", file_path.name, blake3_hash[:16])
             
             # Calculate hash if not in cache
             if not blake3_hash:
                 try:
                     blake3_hash = await blake3_file(file_path)
-                    logger.debug(
-                        "PipelineDeduplicator: Calculated hash for '%s': %s...",
-                        file_path.name, blake3_hash[:16]
-                    )
+                    logger.debug("Calculated hash for '%s': %s...", file_path.name, blake3_hash[:16])
                     
                     # Save to cache if available
                     if self._hash_cache:
                         await self._hash_cache.set(file_path, blake3_hash)
                         
                 except Exception as e:
-                    logger.error(
-                        "PipelineDeduplicator: Hash failed for '%s': %s",
-                        file_path.name, e
-                    )
+                    logger.error("Hash failed for '%s': %s", file_path.name, e)
                     blake3_hash = None
             
             # Update progress
@@ -253,21 +246,40 @@ class PipelineDeduplicator:
                 except Exception as e:
                     logger.debug("Error in progress callback: %s", e)
             
+            # Get file size for batch check decision
+            try:
+                file_size = file_path.stat().st_size
+            except (OSError, AttributeError):
+                file_size = 0
+            
             # Send to check worker
             result = FileHashResult(
                 file_path=file_path,
                 rel_path=rel_path,
                 blake3_hash=blake3_hash,
+                file_size=file_size,
                 error=None if blake3_hash else "Hash calculation failed"
             )
             await self._check_queue.put(result)
 
     async def _check_worker(self, progress_state: dict):
-        """Worker that checks files in DB and MEGA."""
+        """Worker that checks files in DB and MEGA. Uses batch checks for small files."""
+        small_file_buffer: List[FileHashResult] = []
+        
         while True:
+            # Process buffer if it's full or if we're done receiving files
+            if len(small_file_buffer) >= self.BATCH_CHECK_SIZE:
+                await self._process_small_file_batch(small_file_buffer, progress_state)
+                small_file_buffer.clear()
+            
+            # Get next result
             result = await self._check_queue.get()
             
             if result is None:
+                # End of queue - process remaining buffer
+                if small_file_buffer:
+                    await self._process_small_file_batch(small_file_buffer, progress_state)
+                    small_file_buffer.clear()
                 break
             
             if not result.blake3_hash:
@@ -278,86 +290,122 @@ class PipelineDeduplicator:
             # Store hash mapping
             self._path_to_hash[result.file_path] = result.blake3_hash
             
-            # Check if exists in DB
-            exists_in_db = False
-            source_id = None
-            mega_handle = None
+            # Determine if file is small or large
+            is_small = result.file_size < self.SMALL_FILE_THRESHOLD
             
-            try:
-                existing_hashes = await self._repository.check_exists_batch([result.blake3_hash])
-                if result.blake3_hash in existing_hashes:
-                    doc_info = existing_hashes[result.blake3_hash]
-                    exists_in_db = True
-                    
-                    # Handle both old and new format
-                    if isinstance(doc_info, dict):
-                        source_id = doc_info.get("source_id")
-                        mega_handle = doc_info.get("mega_handle")
-                    else:
-                        source_id = doc_info
-                    
-                    logger.debug(
-                        "PipelineDeduplicator: '%s' exists in DB (source_id: %s)",
-                        result.file_path.name, source_id
-                    )
-            except Exception as e:
-                logger.warning(
-                    "PipelineDeduplicator: DB check failed for '%s': %s",
-                    result.file_path.name, e
-                )
-            
-            # If exists in DB, verify it also exists in MEGA
-            exists_in_mega = False
-            if exists_in_db and source_id:
-                try:
-                    if self._manager:
-                        exists_in_mega = await self._manager.find_by_mega_id(source_id) is not None
-                    else:
-                        exists_in_mega = await self._storage.exists_by_mega_id(source_id)
-                except Exception as e:
-                    logger.warning(
-                        "PipelineDeduplicator: MEGA check failed for '%s': %s",
-                        result.file_path.name, e
-                    )
-            
-            # Update progress
-            progress_state["checked"] += 1
-            
-            # Emit check complete event
-            if self._on_check_complete:
-                try:
-                    self._on_check_complete(result.file_path.name, exists_in_db, exists_in_mega)
-                except Exception as e:
-                    logger.debug("Error in check_complete callback: %s", e)
-            
-            # Decide if file should be uploaded
-            if exists_in_db and exists_in_mega:
-                # Skip - exists in both
-                self._skipped_paths.add(result.file_path)
-                self._path_to_source_id[result.file_path] = source_id
-                logger.debug(
-                    "PipelineDeduplicator: ✓ '%s' exists in DB and MEGA - SKIP",
-                    result.file_path.name
-                )
-                
-                # Check and regenerate preview if missing (for videos only)
-                if is_video(result.file_path) and self._preview_handler and self._analyzer:
-                    await self._check_and_regenerate_preview(result.file_path, source_id)
-                
-            elif exists_in_db and not exists_in_mega:
-                # Exists in DB but not MEGA - re-upload
-                self._pending_files.append((result.file_path, result.rel_path))
-                logger.info(
-                    "PipelineDeduplicator: '%s' in DB but not MEGA - WILL RE-UPLOAD",
-                    result.file_path.name
-                )
+            if is_small:
+                # Accumulate small files for batch processing
+                small_file_buffer.append(result)
             else:
-                # New file - upload
+                # Process large files immediately (one by one)
+                await self._check_single_file(result, progress_state)
+        
+        logger.debug("Check worker finished - processed all files")
+    
+    async def _process_small_file_batch(self, batch: List[FileHashResult], progress_state: dict):
+        """Process a batch of small files with a single DB check."""
+        if not batch:
+            return
+        
+        logger.debug("Processing batch of %d small files", len(batch))
+        
+        # Collect all hashes
+        batch_hashes = [r.blake3_hash for r in batch if r.blake3_hash]
+        
+        if not batch_hashes:
+            # No valid hashes, add all to pending
+            for result in batch:
                 self._pending_files.append((result.file_path, result.rel_path))
-                logger.debug(
-                    "PipelineDeduplicator: '%s' is NEW - WILL UPLOAD",
-                    result.file_path.name
-                )
+                progress_state["checked"] += 1
+            return
+        
+        # Batch check in DB
+        existing_hashes: Dict[str, Any] = {}
+        try:
+            existing_hashes = await self._repository.check_exists_batch(batch_hashes)
+            logger.debug("Batch check returned %d existing hashes out of %d checked", len(existing_hashes), len(batch_hashes))
+        except Exception as e:
+            logger.warning("Batch DB check failed: %s", e)
+        
+        # Process each file in the batch
+        for result in batch:
+            await self._process_file_with_db_result(result, existing_hashes, progress_state)
+    
+    async def _check_single_file(self, result: FileHashResult, progress_state: dict):
+        """Check a single file (used for large files)."""
+        # Check if exists in DB
+        existing_hashes: Dict[str, Any] = {}
+        try:
+            existing_hashes = await self._repository.check_exists_batch([result.blake3_hash])
+        except Exception as e:
+            logger.warning("DB check failed for '%s': %s", result.file_path.name, e)
+        
+        await self._process_file_with_db_result(result, existing_hashes, progress_state)
+    
+    async def _process_file_with_db_result(
+        self,
+        result: FileHashResult,
+        existing_hashes: Dict[str, Any],
+        progress_state: dict
+    ):
+        """Process a file using the DB check results."""
+        exists_in_db = False
+        source_id = None
+        mega_handle = None
+        
+        if result.blake3_hash in existing_hashes:
+            doc_info = existing_hashes[result.blake3_hash]
+            exists_in_db = True
+            
+            # Handle both old and new format
+            if isinstance(doc_info, dict):
+                source_id = doc_info.get("source_id")
+                mega_handle = doc_info.get("mega_handle")
+            else:
+                source_id = doc_info
+            
+            logger.debug("'%s' exists in DB (source_id: %s)", result.file_path.name, source_id)
+        
+        # If exists in DB, verify it also exists in MEGA
+        exists_in_mega = False
+        if exists_in_db and source_id:
+            try:
+                if self._manager:
+                    exists_in_mega = await self._manager.find_by_mega_id(source_id) is not None
+                else:
+                    exists_in_mega = await self._storage.exists_by_mega_id(source_id)
+            except Exception as e:
+                logger.warning("MEGA check failed for '%s': %s", result.file_path.name, e)
+        
+        # Update progress
+        progress_state["checked"] += 1
+        
+        # Emit check complete event
+        if self._on_check_complete:
+            try:
+                self._on_check_complete(result.file_path.name, exists_in_db, exists_in_mega)
+            except Exception as e:
+                logger.debug("Error in check_complete callback: %s", e)
+        
+        # Decide if file should be uploaded
+        if exists_in_db and exists_in_mega:
+            # Skip - exists in both
+            self._skipped_paths.add(result.file_path)
+            self._path_to_source_id[result.file_path] = source_id
+            logger.debug("✓ '%s' exists in DB and MEGA - SKIP", result.file_path.name)
+            
+            # Check and regenerate preview if missing (for videos only)
+            if is_video(result.file_path) and self._preview_handler and self._analyzer:
+                await self._check_and_regenerate_preview(result.file_path, source_id)
+            
+        elif exists_in_db and not exists_in_mega:
+            # Exists in DB but not MEGA - re-upload
+            self._pending_files.append((result.file_path, result.rel_path))
+            logger.debug("'%s' in DB but not MEGA - WILL RE-UPLOAD", result.file_path.name)
+        else:
+            # New file - upload
+            self._pending_files.append((result.file_path, result.rel_path))
+            logger.debug("'%s' is NEW - WILL UPLOAD", result.file_path.name)
     
     async def _check_and_regenerate_preview(self, file_path: Path, source_id: str):
         """
@@ -388,17 +436,17 @@ class PipelineDeduplicator:
             
             # Get the full path of the video in MEGA
             video_path = node.path
-            logger.info(f"Video path: {video_path}")
+            logger.debug(f"Video path: {video_path}")
 
         
             # Construct preview path by changing extension to .jpg
             preview_path = video_path.rsplit('.', 1)[0] + '.jpg'
-            logger.info(f"Preview path: {preview_path}")
+            logger.debug(f"Preview path: {preview_path}")
             preview_exists = await self._storage.exists(preview_path)
             if preview_exists:
                 logger.debug("Preview exists for '%s'", file_path.name)
             else:
-                logger.info("PipelineDeduplicator: ✗ Preview missing for '%s' - REGENERATING", file_path.name)
+                logger.debug("✗ Preview missing for '%s' - REGENERATING", file_path.name)
                 # Analyze video to get duration
                 tech_data = await self._analyzer.analyze_video_async(file_path)
                 duration = tech_data.get('duration', 0)
@@ -423,24 +471,11 @@ class PipelineDeduplicator:
                     )
                     
                     if preview_handle:
-                        logger.info(
-                            "PipelineDeduplicator: ✓ Preview regenerated for '%s'",
-                            file_path.name
-                        )
+                        logger.debug("✓ Preview regenerated for '%s'", file_path.name)
                     else:
-                        logger.warning(
-                            "PipelineDeduplicator: Failed to regenerate preview for '%s'",
-                            file_path.name
-                        )
+                        logger.warning("Failed to regenerate preview for '%s'", file_path.name)
                 else:
-                    logger.warning(
-                        "PipelineDeduplicator: Invalid duration for '%s' - skipping preview",
-                        file_path.name
-                    )
+                    logger.warning("Invalid duration for '%s' - skipping preview", file_path.name)
                     
         except Exception as e:
-            logger.error(
-                "PipelineDeduplicator: Error checking/regenerating preview for '%s': %s",
-                file_path.name, e,
-                exc_info=True
-            )
+            logger.error("Error checking/regenerating preview for '%s': %s", file_path.name, e, exc_info=True)

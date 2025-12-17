@@ -316,11 +316,11 @@ class PreviewChecker:
         }
 
         if not video_files:
-            logger.debug("PreviewChecker: No video files to check for previews")
+            logger.debug("No video files to check for previews")
             return 0
 
         total = len(video_files)
-        logger.info("PreviewChecker: Checking previews for %d existing video files", total)
+        logger.info("Checking previews for %d existing video files", total)
         if progress_callback:
             progress_callback("Checking previews...", 0, total)
 
@@ -341,7 +341,7 @@ class PreviewChecker:
             preview_path = f"{preview_dest}/{preview_filename}"
             
             logger.debug(
-                "PreviewChecker: [%d/%d] Checking preview for '%s' at '%s' (source_id: %s)",
+                "[%d/%d] Checking preview for '%s' at '%s' (source_id: %s)",
                 idx + 1, total, file_path.name, preview_path, source_id
             )
 
@@ -350,12 +350,12 @@ class PreviewChecker:
             
             if preview_exists:
                 logger.debug(
-                    "PreviewChecker: ✓ Preview exists for '%s' (source_id: %s) - SKIP",
+                    "✓ Preview exists for '%s' (source_id: %s) - SKIP",
                     file_path.name, source_id
                 )
             else:
                 logger.info(
-                    "PreviewChecker: ✗ Preview missing for '%s' (source_id: %s) - REGENERATING",
+                    "✗ Preview missing for '%s' (source_id: %s) - REGENERATING",
                     file_path.name, source_id
                 )
                 
@@ -373,25 +373,26 @@ class PreviewChecker:
                             dest_path=preview_dest,
                             filename=file_path.name
                         )
+                        
                         if preview_handle:
                             logger.info(
-                                "PreviewChecker: ✓ Preview regenerated and uploaded for '%s' (source_id: %s, handle: %s)",
+                                "✓ Preview regenerated and uploaded for '%s' (source_id: %s, handle: %s)",
                                 file_path.name, source_id, preview_handle
                             )
                             regenerated += 1
                         else:
                             logger.warning(
-                                "PreviewChecker: Failed to upload preview for '%s' (source_id: %s)",
+                                "Failed to upload preview for '%s' (source_id: %s)",
                                 file_path.name, source_id
                             )
                     else:
                         logger.warning(
-                            "PreviewChecker: Invalid duration (%.2f) for '%s' (source_id: %s) - skipping preview",
+                            "Invalid duration (%.2f) for '%s' (source_id: %s) - skipping preview",
                             duration, file_path.name, source_id
                         )
                 except Exception as e:
                     logger.error(
-                        "PreviewChecker: Error regenerating preview for '%s' (source_id: %s): %s",
+                        "Error regenerating preview for '%s' (source_id: %s): %s",
                         file_path.name, source_id, e,
                         exc_info=True
                     )
@@ -400,9 +401,9 @@ class PreviewChecker:
                 progress_callback(f"Checking previews: {file_path.name}", idx + 1, total)
 
         if regenerated > 0:
-            logger.info("PreviewChecker: Regenerated %d missing previews", regenerated)
+            logger.info("Regenerated %d missing previews", regenerated)
         else:
-            logger.debug("PreviewChecker: All previews exist, nothing to regenerate")
+            logger.debug("All previews exist, nothing to regenerate")
 
         return regenerated
 
