@@ -154,22 +154,22 @@ class ImageSetProcessor:
                                 exists_in_mega = False
                                 try:
                                     if isinstance(self._storage, ManagedStorageService):
-                                        logger.info(f"Checking if archive exists in MEGA using ManagedStorageService")
+                                        logger.debug(f"Checking if archive exists in MEGA using ManagedStorageService")
                                         exists_in_mega = await self._storage.manager.find_by_mega_id(existing_source_id) is not None
                                     else:
-                                        logger.info(f"Checking if archive exists in MEGA using StorageService")
+                                        logger.debug(f"Checking if archive exists in MEGA using StorageService")
                                         exists_in_mega = await self._storage.exists_by_mega_id(existing_source_id)
-                                        logger.info(f"Archive exists in MEGA: {exists_in_mega}")
+                                        logger.debug(f"Archive exists in MEGA: {exists_in_mega}")
                                 except Exception as e:
                                     logger.warning(f"MEGA check failed for archive: {e}")
                                 
                                 if exists_in_mega:
                                     archive_exists_in_both = True
-                                    logger.info(
+                                    logger.debug(
                                         f"Archive exists in both DB and MEGA (source_id: {existing_source_id}) - SKIPPING entire process"
                                     )
                                 else:
-                                    logger.info(
+                                    logger.debug(
                                         f"Archive exists in DB but NOT in MEGA (source_id: {existing_source_id}) - will re-upload"
                                     )
                 
@@ -189,7 +189,7 @@ class ImageSetProcessor:
             
             # Step 1.1: Select cover (first vertical image)
             cover = self._selector.select_cover(images)
-            logger.info(f"Selected cover: {cover.name} (first vertical image)")
+            logger.debug(f"Selected cover: {cover.name} (first vertical image)")
             
             # Generate thumbnails (320px and 1024px) and calculate perceptual features
             # Returns dict mapping image_path -> (phash, avg_color_lab)
@@ -206,11 +206,11 @@ class ImageSetProcessor:
             if existing_source_id and not archive_exists_in_both:
                 # Use existing source_id if archive exists in DB but not in MEGA (re-upload)
                 set_source_id = existing_source_id
-                logger.info(f"Using existing set source_id for re-upload: {set_source_id}")
+                logger.debug(f"Using existing set source_id for re-upload: {set_source_id}")
             else:
                 # Generate new source_id for new archive
                 set_source_id = generate_id()
-                logger.info(f"Generated new set source_id: {set_source_id}")
+                logger.debug(f"Generated new set source_id: {set_source_id}")
             
             # Step 3: Process images only if we don't have an existing 7z file ready to upload
             # If we have an existing 7z in files/ and it exists in DB but not MEGA, skip image processing
@@ -255,14 +255,14 @@ class ImageSetProcessor:
                         image_results
                     )
                 
-                logger.info(f"Created {len(archive_files)} archive file(s)")
+                logger.debug(f"Created {len(archive_files)} archive file(s)")
             
             # Calculate hash if we don't have it yet (for new archives)
             if not archive_hash and archive_files and archive_files[0].exists():
                 try:
-                    logger.info(f"Calculating hash for archive before saving: {archive_files[0].name}")
+                    logger.debug(f"Calculating hash for archive before saving: {archive_files[0].name}")
                     archive_hash = await blake3_file(archive_files[0])
-                    logger.info(f"Archive hash calculated: {archive_hash}")
+                    logger.debug(f"Archive hash calculated: {archive_hash}")
                 except Exception as e:
                     logger.warning(f"Failed to calculate archive hash: {e}")
             
@@ -309,7 +309,7 @@ class ImageSetProcessor:
             cover_handle = None
             if cover and cover.exists():
                 try:
-                    logger.info(f"Uploading cover image: {cover.name}")
+                    logger.debug(f"Uploading cover image: {cover.name}")
                     if progress_callback:
                         progress_callback(f"Uploading cover: {cover.name}...", 95, 100)
                     
@@ -332,7 +332,7 @@ class ImageSetProcessor:
                         )
                         
                         if cover_handle:
-                            logger.info(f"Cover uploaded: {dest_path}/{cover_filename}")
+                            logger.debug(f"Cover uploaded: {dest_path}/{cover_filename}")
                         else:
                             logger.warning(f"Failed to upload cover image")
                     finally:
@@ -349,7 +349,7 @@ class ImageSetProcessor:
             grid_handle = None
             if grid_preview_path and grid_preview_path.exists():
                 try:
-                    logger.info(f"Uploading grid preview: {set_name}.jpg")
+                    logger.debug(f"Uploading grid preview: {set_name}.jpg")
                     if progress_callback:
                         progress_callback(f"Uploading grid preview...", 96, 100)
                     
@@ -363,7 +363,7 @@ class ImageSetProcessor:
                     )
                     
                     if grid_handle:
-                        logger.info(f"Grid preview uploaded: {dest_path}/{grid_filename}")
+                        logger.debug(f"Grid preview uploaded: {dest_path}/{grid_filename}")
                     else:
                         logger.warning(f"Failed to upload grid preview")
                         
@@ -468,7 +468,7 @@ class ImageSetProcessor:
         Returns:
             Dict mapping image_path -> (phash, avg_color_lab)
         """
-        logger.info(f"Generating thumbnails (320px and 1024px) for {len(images)} images...")
+        logger.debug(f"Generating thumbnails (320px and 1024px) for {len(images)} images...")
         
         # Create thumbnail folders
         thumb_320_dir = set_folder / "m"
@@ -482,18 +482,10 @@ class ImageSetProcessor:
         
         total_images = len(images)
         
-        # Use ProcessPoolExecutor to utilize all CPU cores
-        # Process all images in parallel (up to CPU count workers)
         max_workers = os.cpu_count() or os.getenv("IMAGE_RESIZE_MAX_WORKERS")
-        logger.info(f"Using ProcessPoolExecutor with {max_workers} workers for {total_images} images")
-        
-        # Store perceptual features (pHash and avg_color_lab) for each image
-        # Maps image_path -> (phash, avg_color_lab)
+        logger.debug(f"Using ProcessPoolExecutor with {max_workers} workers for {total_images} images")
         perceptual_features = {}
-        
-        # Create executor and process all images
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks to the executor
             futures = {
                 executor.submit(
                     ImageSetProcessor._process_single_image_static,
@@ -504,11 +496,9 @@ class ImageSetProcessor:
                 for img in images
             }
             
-            # Wrap concurrent futures as asyncio futures
             loop = asyncio.get_event_loop()
             async_futures = {asyncio.wrap_future(f, loop=loop): img for f, img in futures.items()}
             
-            # Process results as they complete, with progress updates
             batch_size = max(1, max_workers // 2)  # Update progress every N completions
             completed = 0
             
@@ -561,7 +551,7 @@ class ImageSetProcessor:
             )
             
             if grid_path and grid_path.exists():
-                logger.info(f"Grid preview generated: {grid_path}")
+                logger.debug(f"Grid preview generated: {grid_path}")
                 return grid_path
             else:
                 logger.warning("Failed to generate grid preview")
@@ -592,7 +582,7 @@ class ImageSetProcessor:
         results = []
         batch_items = []  # Accumulate data for batch POST
         
-        logger.info(f"Processing {len(images)} images for set...")
+        logger.debug(f"Processing {len(images)} images for set...")
         
         # Step 1: Analyze all images first (can be done in parallel if needed)
         analyzed_images = []
@@ -687,7 +677,7 @@ class ImageSetProcessor:
                         UploadResult.fail(image_path.name, f"Batch save failed: {str(e)}")
                     )
         
-        logger.info(f"Processed {len(results)} images for set ({len([r for r in results if r.success])} successful)")
+        logger.debug(f"Processed {len(results)} images for set ({len([r for r in results if r.success])} successful)")
         return results
     
     async def _save_set_document(
@@ -710,8 +700,8 @@ class ImageSetProcessor:
         # Include blake3_hash if available
         if blake3_hash:
             set_doc["blake3_hash"] = blake3_hash
-            logger.info(f"Including blake3_hash in set document: {blake3_hash[:16]}...")
-        
+            logger.debug(f"Including blake3_hash in set document: {blake3_hash[:16]}...")
+            
         await self._repository.save_set_document(set_doc)
-        logger.info(f"Saved set document: {set_source_id}")
+        logger.debug(f"Saved set document: {set_source_id}")
 
