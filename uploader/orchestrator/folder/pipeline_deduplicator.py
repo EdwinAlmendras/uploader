@@ -446,11 +446,11 @@ class PipelineDeduplicator:
             # Construct preview path by changing extension to .jpg
             preview_path = video_path.rsplit('.', 1)[0] + '.jpg'
             logger.debug(f"Preview path: {preview_path}")
-            preview_exists = await self._storage.exists(preview_path)
+            preview_exists = await self._manager.exists(preview_path)
             if preview_exists:
                 logger.debug("Preview exists for '%s'", file_path.name)
             else:
-                logger.debug("✗ Preview missing for '%s' - REGENERATING", file_path.name)
+                logger.debug(f"Preview missing for '{file_path.name}'")
                 # Analyze video to get duration
                 tech_data = await self._analyzer.analyze_video_async(file_path)
                 duration = tech_data.get('duration', 0)

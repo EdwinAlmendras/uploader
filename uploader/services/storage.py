@@ -71,15 +71,6 @@ class StorageService:
         return node.handle if node else None
     
     async def get_node(self, path: str):
-        """
-        Get node from MEGA by path.
-        
-        Args:
-            path: Full path to check (e.g., "/Folder/file.mp4")
-            
-        Returns:
-            Node if exists, None otherwise
-        """
         try:
             path = path if path.startswith("/") else f"/{path}"
             return await self._client.get(path)
@@ -87,36 +78,14 @@ class StorageService:
             return None
     
     async def exists(self, path: str) -> bool:
-        """
-        Check if file/folder exists in MEGA.
-        
-        Args:
-            path: Full path to check (e.g., "/Folder/file.mp4")
-            
-        Returns:
-            True if exists, False otherwise
-        """
         node = await self.get_node(path)
         return node is not None
     
     async def exists_by_mega_id(self, mega_id: str) -> bool:
-        """
-        Check if file exists in MEGA by mega_id (attribute 'm').
-        
-        Searches through all files to find one with mega_id.
-        
-        Args:
-            mega_id: Source ID (mega_id stored as 'm' attribute)
-            
-        Returns:
-            True if exists, False otherwise
-        """
         try:
-            # Ensure nodes are loaded
             if self._client._node_service is None:
                 await self._client._load_nodes()
             
-            # Search recursively through all files
             def search_nodes(node):
                 """Recursively search for node with mega_id."""
                 if not node:
