@@ -442,10 +442,11 @@ class PipelineDeduplicator:
             video_path = node.path
             logger.debug(f"Video path: {video_path}")
 
-        
+
             # Construct preview path by changing extension to .jpg
             preview_path = video_path.rsplit('.', 1)[0] + '.jpg'
             logger.debug(f"Preview path: {preview_path}")
+            print(f"Preview path: {preview_path} , video_path: {video_path}")
             preview_exists = await self._manager.exists(preview_path)
             if preview_exists:
                 logger.debug("Preview exists for '%s'", file_path.name)
