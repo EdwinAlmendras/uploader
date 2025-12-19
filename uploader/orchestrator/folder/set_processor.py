@@ -216,12 +216,6 @@ class ImageSetProcessor:
                 archive_files = self._archiver.create(set_folder, archive_name)
                 
                 if not archive_files:
-                    # Cleanup grid preview if exists
-                    if grid_preview_path and grid_preview_path.exists():
-                        try:
-                            grid_preview_path.unlink(missing_ok=True)
-                        except:
-                            pass
                     return (
                         UploadResult.fail(set_name, "Failed to create 7z archive"),
                         image_results
@@ -229,7 +223,6 @@ class ImageSetProcessor:
                 
                 logger.debug(f"Created {len(archive_files)} archive file(s)")
             
-            # Calculate hash if we don't have it yet (for new archives)
             if not archive_hash and archive_files and archive_files[0].exists():
                 try:
                     logger.debug(f"Calculating hash for archive before saving: {archive_files[0].name}")
@@ -266,12 +259,6 @@ class ImageSetProcessor:
                     logger.error(f"Error uploading archive part {idx}: {e}")
             
             if not mega_handles:
-                # Cleanup grid preview if exists
-                if grid_preview_path and grid_preview_path.exists():
-                    try:
-                        grid_preview_path.unlink(missing_ok=True)
-                    except:
-                        pass
                 return (
                     UploadResult.fail(set_name, "Failed to upload 7z archive"),
                     image_results

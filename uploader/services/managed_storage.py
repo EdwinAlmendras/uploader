@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import hashlib
 import os
-
-from ..models import UploadConfig
+from megapy import MegaClient
+from uploader.models import UploadConfig
 from mega_account import AccountManager, NoSpaceError
 from mega_account.api_client import AccountAPIClient
+from megapy.core.api.errors import MegaAPIError
 import logging
 
-logger = logging.getLogger("uploader.services.managed_storage")
+logger = logging.getLogger(__name__)
 
 
 class ManagedStorageService:
@@ -292,18 +293,13 @@ class ManagedStorageService:
             active_accounts = manager.active_accounts
             
             if not active_accounts:
-                # No accounts available, try to create one
-                if manager.auto_create:
-                    logger.info("No accounts found. Attempting to create a new account...")
-                    new_account = await manager.create_new_session()
-                    if new_account:
-                        active_accounts = manager.active_accounts
-            
+                logger.info("No accounts found. exiting...")
+                return False
+
             if not active_accounts:
                 logger.warning("No accounts available")
                 return False
             
-            # Sum free space from all active accounts
             total_free_space = sum(account.space_free for account in active_accounts)
             
             logger.debug(
@@ -314,19 +310,7 @@ class ManagedStorageService:
             if total_free_space >= total_size:
                 return True
             
-            # Not enough space, try to create a new account if auto_create is enabled
-            if manager.auto_create:
-                logger.info(
-                    f"Insufficient total space ({total_free_space / (1024**3):.2f} GB). "
-                    f"Attempting to create a new account..."
-                )
-                new_account = await manager.create_new_session(prompt_new=True)
-                if new_account:
-                    # Recalculate with new account
-                    active_accounts = manager.active_accounts
-                    total_free_space = sum(account.space_free for account in active_accounts)
-                    return total_free_space >= total_size
-            
+            logger.info("Not enough space. exiting...")
             return False
             
         except Exception as e:
@@ -360,51 +344,99 @@ class ManagedStorageService:
         file_size = path.stat().st_size
         original_dest = dest
         dest = dest or self._config.dest_folder
-        logger.debug(f"upload_video: original_dest={original_dest}, final_dest={dest}, config.dest_folder={self._config.dest_folder}")
+        logger.debug(f"original_dest={original_dest}, final_dest={dest}, config.dest_folder={self._config.dest_folder}")
         
         # Use locked account if available, otherwise select automatically
         if self._locked_client and self._locked_account:
             client = self._locked_client
             current_account = self._locked_account
-            logger.debug(f"upload_video: Using locked account: {current_account}")
+            logger.debug(f"Using locked account: {current_account}")
         else:
             # Get client with enough space
             client = await self._manager.get_client_for(file_size)
             current_account = self._manager._current_account
-            logger.debug(f"upload_video: Selected account: {current_account}")
+            logger.debug(f"Selected account: {current_account}")
         
         # Track account changes and clear cache if needed
         if current_account != self._last_account:
             # Account changed - cache is still valid per account, but we track it
             self._last_account = current_account
         
-        # Get or create destination folder (uses account-specific cache)
-        logger.debug(f"upload_video: Getting/creating folder: dest={dest}, account={current_account}")
-        dest_handle = await self._get_or_create_folder(client, dest, current_account)
-        logger.debug(f"upload_video: Folder handle: {dest_handle}")
+        max_retries = 3
+        retry_count = 0
         
-        # Upload with mega_id (flat 'm' attribute)
-        logger.debug(f"upload_video: Starting upload to handle={dest_handle}, filename={path.name}")
-        node = await client.upload(
-            path,
-            dest_folder=dest_handle,
-            progress_callback=progress_callback,
-            mega_id=source_id
-        )
-        
-        if node:
-            logger.info(f"upload_video: Upload successful, handle={node.handle}")
-        else:
-            logger.error(f"upload_video: Upload failed, node is None")
-        
-        # Update space tracking in manager
-        if node and current_account:
-            account = self._manager._accounts.get(current_account)
-            if account:
-                account.space_used += file_size
-                account.space_free -= file_size
-        
-        return node.handle if node else None
+        while retry_count < max_retries:
+            try:
+                # Get or create destination folder
+                logger.debug(f"Getting/creating folder: dest={dest}, account={current_account}")
+                dest_handle = await self._get_or_create_folder(client, dest, current_account)
+                logger.debug(f"Folder handle: {dest_handle}")
+                
+                # Upload with mega_id
+                logger.debug(f"Starting upload to handle={dest_handle}, filename={path.name}")
+                node = await client.upload(
+                    path,
+                    dest_folder=dest_handle,
+                    progress_callback=progress_callback,
+                    mega_id=source_id
+                )
+                
+                if node:
+                    logger.info(f"Upload successful, handle={node.handle}")
+                    
+                    # Update space tracking
+                    if current_account:
+                        account = self._manager._accounts.get(current_account)
+                        if account:
+                            account.space_used += file_size
+                            account.space_free -= file_size
+                    
+                    return node.handle
+                else:
+                    logger.error(f"Upload failed, node is None")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.info(f"Retrying upload (attempt {retry_count}/{max_retries})...")
+                        continue
+                    raise Exception("Upload failed: node is None after all retries")
+                    
+            except MegaAPIError as e:
+                code = e.code
+                message = e.message
+                if code == -17:
+                    logger.warning(f"Error -17 (quota exceeded) for account {current_account}: {message}")
+                    if current_account and not (self._locked_client and self._locked_account):
+                        account = self._manager._accounts.get(current_account)
+                        if account:
+                            account.space_free = 0
+                            logger.info(f"Marked account {current_account} as full")
+                    
+                    if self._locked_client and self._locked_account:
+                        logger.error(f"Cannot switch from locked account, upload failed")
+                        raise e
+                    logger.info("Switching to better account...")
+                    client = await self._manager.get_client_for(file_size)
+                    current_account = self._manager._current_account
+                    logger.debug(f"Switched to account: {current_account}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        continue
+                    raise e
+                else:
+                    logger.warning(f"API error (code {code}): {message}")
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        logger.info(f"Retrying upload (attempt {retry_count}/{max_retries})...")
+                        continue
+                    raise e
+                    
+            except Exception as upload_error:
+                logger.warning(f"Exception during upload: {upload_error}")
+                retry_count += 1
+                if retry_count < max_retries:
+                    logger.info(f"Retrying upload (attempt {retry_count}/{max_retries})...")
+                    continue
+                raise upload_error
     
     async def get_node(self, path: str):
         """
@@ -607,7 +639,7 @@ class ManagedStorageService:
             logger.error(f"Exception occurred: {e}", exc_info=True)
             raise e
     
-    async def _ensure_preview_folder(self, client, account_name: Optional[str] = None) -> Optional[str]:
+    async def _ensure_preview_folder(self, client: MegaClient, account_name: Optional[str] = None) -> Optional[str]:
         """
         Ensure /.previews/ folder exists in MEGA root.
         
