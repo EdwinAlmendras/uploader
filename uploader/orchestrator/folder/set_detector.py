@@ -81,7 +81,7 @@ class SetDetector:
         has_images = False
         has_videos = False
         has_subfolders = False
-        
+        count_images = 0
         for item in folder.iterdir():
             if item.is_dir():
                 # Ignore thumbnail folders and other system folders
@@ -91,11 +91,15 @@ class SetDetector:
             elif item.is_file():
                 if is_image(item):
                     has_images = True
+                    count_images += 1
                 elif is_video(item):
                     has_videos = True
                     logger.debug(f"Folder {folder.name} has video: {item.name}")
         
         # Valid set: has images, no videos, no subfolders
+        if count_images < 5:
+            return False
+        
         if has_images and not has_videos and not has_subfolders:
             return True
         
