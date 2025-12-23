@@ -569,7 +569,7 @@ class ImageSetProcessor:
                 )
                 
                 # Generate source_id for this image
-                image_source_id = generate_id()
+                image_source_id = generate_id(12)
                 tech_data["source_id"] = image_source_id
                 
                 # Add set_doc_id reference
