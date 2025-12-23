@@ -180,7 +180,7 @@ class ImageSetProcessor:
             perceptual_features = await self._generate_thumbnails(set_folder, images, progress_callback)
             if progress_callback:
                 progress_callback(f"Generating grid preview...", 25, 100)
-            grid_preview_path = await self._generate_grid_preview(set_folder)
+            grid_preview_path = await self._generate_grid_preview(set_folder, len(images))
             
             if existing_source_id and not archive_exists_in_both:
                 set_source_id = existing_source_id
@@ -489,10 +489,15 @@ class ImageSetProcessor:
     
     async def _generate_grid_preview(
         self,
-        set_folder: Path
+        set_folder: Path,
+        image_count: int
     ) -> Optional[Path]:
         """
         Generate grid preview for the set using mediakit.
+        
+        Args:
+            set_folder: Path to the image set folder
+            image_count: Total number of images (used for dynamic grid sizing)
         
         Returns:
             Path to generated grid preview image
@@ -500,13 +505,33 @@ class ImageSetProcessor:
         try:
             loop = asyncio.get_event_loop()
             
+            # Calculate dynamic rows/cols based on image count thresholds
+            if image_count < 50:
+                grid_dim = 4
+            elif image_count < 100:
+                grid_dim = 5
+            elif image_count < 300:
+                grid_dim = 6
+            elif image_count < 600:
+                grid_dim = 7
+            elif image_count < 1000:
+                grid_dim = 8
+            elif image_count < 2000:
+                grid_dim = 9
+            else:
+                grid_dim = 10
+            
+            from mediakit.preview.image_preview import GridConfig
+            config = GridConfig(rows=grid_dim, cols=grid_dim, cell_size=400)
+            logger.debug(f"Using dynamic grid {grid_dim}x{grid_dim} for {image_count} images")
+            
             # Generate grid preview using mediakit (synchronous operation)
             grid_path = await loop.run_in_executor(
                 None,
                 self._preview_generator.generate,
                 set_folder,
                 None,  # output_path=None means it will create a temp file
-                None   # config=None means use defaults
+                config
             )
             
             if grid_path and grid_path.exists():
