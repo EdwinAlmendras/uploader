@@ -170,62 +170,8 @@ class ImageSetProcessor:
                     existing_source_id = pre_check_info.get('source_id')
                     existing_mega_handle = pre_check_info.get('mega_handle')
             
-            # If archive exists in both DB and MEGA, check if grid preview also exists
+            # If archive exists in both DB and MEGA, skip processing (handler.py handles grid check)
             if archive_exists_in_both and existing_source_id:
-                # Find the actual archive node in MEGA to get its real path
-                archive_node_info = None
-                if isinstance(self._storage, ManagedStorageService):
-                    archive_node_info = await self._storage.manager.find_by_mega_id(existing_source_id)
-                
-                if archive_node_info:
-                    _, archive_node = archive_node_info
-                    archive_mega_path = archive_node.path
-                    
-                    # Derive grid preview path from archive path (replace .7z with .jpg)
-                    grid_mega_path = archive_mega_path.rsplit('.', 1)[0] + '.jpg'
-                    grid_filename = f"{set_name}.jpg"
-                    
-                    # Extract dest folder from archive path
-                    path_parts = archive_mega_path.rsplit('/', 1)
-                    archive_dest_path = path_parts[0] if len(path_parts) == 2 else None
-                    
-                    logger.debug(f"Archive path in MEGA: {archive_mega_path}")
-                    logger.debug(f"Grid preview path: {grid_mega_path}")
-                    
-                    grid_exists = await self._storage.exists(grid_mega_path)
-                    
-                    if not grid_exists:
-                        logger.info(f"Grid preview missing for existing set '{set_name}' at '{grid_mega_path}' - regenerating")
-                        if progress_callback:
-                            progress_callback(f"Regenerating grid preview for {set_name}...", 50, 100)
-                        
-                        grid_preview_path = await self._generate_grid_preview(set_folder, len(images))
-                        
-                        if grid_preview_path and grid_preview_path.exists():
-                            try:
-                                grid_handle = await self._storage.upload_preview(
-                                    grid_preview_path,
-                                    dest_path=archive_dest_path,
-                                    filename=grid_filename
-                                )
-                                if grid_handle:
-                                    logger.info(f"✓ Grid preview regenerated for '{set_name}': {grid_mega_path}")
-                                else:
-                                    logger.warning(f"Failed to upload grid preview for '{set_name}'")
-                            except Exception as e:
-                                logger.warning(f"Error uploading grid preview for '{set_name}': {e}")
-                            finally:
-                                try:
-                                    grid_preview_path.unlink(missing_ok=True)
-                                    if grid_preview_path.parent.name.startswith("tmp") or "temp" in str(grid_preview_path.parent):
-                                        shutil.rmtree(grid_preview_path.parent, ignore_errors=True)
-                                except:
-                                    pass
-                    else:
-                        logger.debug(f"Grid preview exists for '{set_name}' - skipping")
-                else:
-                    logger.debug(f"Could not find archive node in MEGA for source_id: {existing_source_id}")
-                
                 return (
                     UploadResult.ok(existing_source_id, set_name, existing_mega_handle, None),
                     []

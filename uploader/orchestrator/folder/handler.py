@@ -216,6 +216,57 @@ class FolderUploadHandler:
                         # Get pre-check info for this set
                         set_check_info = set_check_results.get(set_folder, {})
                         
+                        # Skip if set already exists in both DB and MEGA
+                        if set_check_info.get('exists_in_both'):
+                            existing_source_id = set_check_info.get('source_id')
+                            existing_mega_handle = set_check_info.get('mega_handle')
+                            
+                            # Check if grid preview exists, regenerate if missing
+                            if existing_source_id and isinstance(self._storage, ManagedStorageService):
+                                archive_node_info = await self._storage.manager.find_by_mega_id(existing_source_id)
+                                if archive_node_info:
+                                    _, archive_node = archive_node_info
+                                    archive_mega_path = archive_node.path
+                                    grid_mega_path = archive_mega_path.rsplit('.', 1)[0] + '.jpg'
+                                    
+                                    grid_exists = await self._storage.exists(grid_mega_path)
+                                    if not grid_exists:
+                                        logger.info(f"Grid preview missing for '{set_folder.name}' - regenerating")
+                                        from mediakit.preview.image_preview import ImagePreviewGenerator
+                                        preview_gen = ImagePreviewGenerator(cell_size=400)
+                                        
+                                        images = self._set_processor._selector.get_images(set_folder)
+                                        grid_preview_path = await self._set_processor._generate_grid_preview(set_folder, len(images))
+                                        
+                                        if grid_preview_path and grid_preview_path.exists():
+                                            path_parts = archive_mega_path.rsplit('/', 1)
+                                            archive_dest_path = path_parts[0] if len(path_parts) == 2 else None
+                                            grid_filename = f"{set_folder.name}.jpg"
+                                            
+                                            try:
+                                                await self._storage.upload_preview(
+                                                    grid_preview_path,
+                                                    dest_path=archive_dest_path,
+                                                    filename=grid_filename
+                                                )
+                                                logger.info(f"✓ Grid preview regenerated for '{set_folder.name}'")
+                                            except Exception as e:
+                                                logger.warning(f"Error uploading grid preview: {e}")
+                                            finally:
+                                                try:
+                                                    grid_preview_path.unlink(missing_ok=True)
+                                                except:
+                                                    pass
+                                    else:
+                                        logger.debug(f"Grid preview exists for '{set_folder.name}'")
+                            
+                            logger.info(f"Set '{set_folder.name}' already exists in DB and MEGA - skipping")
+                            from uploader.orchestrator.models import UploadResult
+                            all_results.append(
+                                UploadResult.ok(existing_source_id, set_folder.name, existing_mega_handle, None)
+                            )
+                            continue
+                        
                         set_result, image_results = await self._set_processor.process_set(
                             set_folder,
                             set_dest_path,  # Use calculated destination path with subfolders
