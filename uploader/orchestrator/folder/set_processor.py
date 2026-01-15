@@ -276,9 +276,8 @@ class ImageSetProcessor:
                     cover_filename = f"{set_name}.cover.jpg"
                     
                     # Create a temp copy with correct name for upload
-                    temp_cover = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
-                    temp_cover_path = Path(temp_cover.name)
-                    temp_cover.close()
+                    temp_cover_dir = Path(tempfile.mkdtemp(prefix="cover_", dir="/var/tmp"))
+                    temp_cover_path = temp_cover_dir / "cover.jpg"
                     
                     # Copy cover to temp file
                     shutil.copy2(cover, temp_cover_path)
