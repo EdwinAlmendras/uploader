@@ -419,7 +419,7 @@ class FolderUploadHandler:
                     await process._events.emit("progress", process.stats)
                 
                 # Step 2.3.5: Check available space for files to upload (only if ManagedStorageService)
-                if pending_files and isinstance(self._storage, ManagedStorageService):
+                if pending_files and isinstance(self._storage, ManagedStorageService) and not self._config.skip_space_check:
                     if process:
                         await process.set_phase(ProcessPhase.CHECKING_SPACE, "Checking storage space...")
                     

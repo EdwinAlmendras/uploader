@@ -114,7 +114,11 @@ class UploadConfig:
     grid_size_long: int = 5    # > 15 min
     # Thresholds in seconds
     tiny_threshold: int = 60       # 1 minute
+
     long_threshold: int = 600      # 15 minutes
+    
+    # Flags
+    skip_space_check: bool = False  # Skip storage space verification
     
     def get_grid_size(self, duration: float) -> int:
         """
