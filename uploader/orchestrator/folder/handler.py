@@ -54,6 +54,7 @@ class FolderUploadHandler:
         self._repository = repository
         self._hash_cache: Optional[HashCache] = None
         self._analyzer = analyzer
+        self._config = config
     
     def upload_folder(
         self,
