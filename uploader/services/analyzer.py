@@ -6,6 +6,7 @@ Uses mediakit for video/photo analysis.
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 import asyncio
+import os
 
 from ..protocols import IAnalyzer
 from .resume import blake3_file
@@ -62,16 +63,16 @@ class AnalyzerService(IAnalyzer):
         """Analyze media file asynchronously."""
         loop = asyncio.get_event_loop()
         tech_data = await loop.run_in_executor(None, self.analyze, path)
-        # Add blake3_hash
-        tech_data["blake3_hash"] = await blake3_file(path)
+        if not self._skip_hash_check():
+            tech_data["blake3_hash"] = await blake3_file(path)
         return tech_data
     
     async def analyze_video_async(self, path: Path) -> Dict[str, Any]:
         """Analyze video file asynchronously."""
         loop = asyncio.get_event_loop()
         tech_data = await loop.run_in_executor(None, self.analyze_video, path)
-        # Add blake3_hash
-        tech_data["blake3_hash"] = await blake3_file(path)
+        if not self._skip_hash_check():
+            tech_data["blake3_hash"] = await blake3_file(path)
         return tech_data
     
     async def analyze_photo_async(
@@ -96,8 +97,8 @@ class AnalyzerService(IAnalyzer):
             phash, 
             avg_color_lab
         )
-        # Add blake3_hash
-        tech_data["blake3_hash"] = await blake3_file(path)
+        if not self._skip_hash_check():
+            tech_data["blake3_hash"] = await blake3_file(path)
         return tech_data
     
     @staticmethod
@@ -107,3 +108,7 @@ class AnalyzerService(IAnalyzer):
     @staticmethod
     def is_photo(path: Path) -> bool:
         return is_image(path)
+    @staticmethod
+    def _skip_hash_check() -> bool:
+        raw = os.getenv("UPLOADER_SKIP_HASH_CHECK", "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
