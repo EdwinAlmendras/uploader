@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Optional, Callable, List, Dict, Any
+import os
 import traceback
 from uploader.orchestrator.preview_handler import PreviewHandler
 from uploader.orchestrator.file_collector import FileCollector
@@ -55,6 +56,11 @@ class FolderUploadHandler:
         self._hash_cache: Optional[HashCache] = None
         self._analyzer = analyzer
         self._config = config
+
+    @staticmethod
+    def _skip_hash_check() -> bool:
+        raw = os.getenv("UPLOADER_SKIP_HASH_CHECK", "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
     
     def upload_folder(
         self,
@@ -308,7 +314,7 @@ class FolderUploadHandler:
                 path_to_hash = {}  # Will store calculated hashes for later use
                 existing_files_with_source_id = {}  # path -> source_id for existing files
                 
-                if files_to_check_db and self._blake3_deduplicator:
+                if files_to_check_db and self._blake3_deduplicator and not self._skip_hash_check():
                     if process:
                         await process.set_phase(ProcessPhase.HASHING, "Calculating hashes...")
                     
@@ -400,6 +406,11 @@ class FolderUploadHandler:
                     )
                     else:
                         logger.debug("After blake3_hash check: All %d files are new (not in database)", len(files_to_check_db))
+                elif files_to_check_db and self._skip_hash_check():
+                    logger.warning(
+                        "Skipping blake3 deduplication for folder files (UPLOADER_SKIP_HASH_CHECK is enabled)."
+                    )
+                    pending_files = [(fp, fp.relative_to(folder_path)) for fp in files_to_check_db]
                 else:
                     pending_files = [(fp, fp.relative_to(folder_path)) for fp in files_to_check_db]
                     
@@ -521,6 +532,10 @@ class FolderUploadHandler:
             }
         """
         from uploader.services.resume import blake3_file
+
+        if self._skip_hash_check():
+            logger.warning("Skipping set deduplication hash checks (UPLOADER_SKIP_HASH_CHECK is enabled).")
+            return {set_folder: {} for set_folder in sets}
         
         BATCH_SIZE = 50  # Process sets in batches of 50
         results = {}
