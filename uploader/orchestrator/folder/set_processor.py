@@ -26,6 +26,7 @@ from mediakit.image.processor import ImageProcessor
 from typing import Any
 
 logger = logging.getLogger(__name__)
+SET_IMAGE_SOURCE_ID_LENGTH = 16
 
 
 class CustomResizeQuality(IntEnum):
@@ -398,7 +399,7 @@ class ImageSetProcessor:
                 )
                 
                 # Generate source_id for this image
-                image_source_id = generate_id(12)
+                image_source_id = generate_id(SET_IMAGE_SOURCE_ID_LENGTH)
                 tech_data["source_id"] = image_source_id
                 
                 # Add set_doc_id reference

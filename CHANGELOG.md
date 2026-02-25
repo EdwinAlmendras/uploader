@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [0.2.4] - 2026-02-25
+
+### Changed
+- Increased `source_id` length from 12 to 16 characters specifically for image documents generated inside set processing.
+- Bumped project version from `0.2.3` to `0.2.4`.
+
 ## [0.2.3] - 2026-02-25
 
 ### Added
