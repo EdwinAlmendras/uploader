@@ -25,6 +25,17 @@ class TestAnalyzerService:
         with pytest.raises(ValueError, match="Unsupported file type"):
             service.analyze(Path("file.txt"))
 
+    def test_analyze_photo_uses_supported_signature(self):
+        service = AnalyzerService()
+        with patch("uploader.services.analyzer.mediakit_analyze_photo", return_value={"ok": True}) as mock_fn:
+            result = service.analyze_photo(Path("photo.jpg"), phash="abc", avg_color_lab=[1.0, 2.0, 3.0])
+        mock_fn.assert_called_once_with(
+            Path("photo.jpg"),
+            phash="abc",
+            avg_color_lab=[1.0, 2.0, 3.0],
+        )
+        assert result == {"ok": True}
+
 
 class TestPreviewService:
     def test_get_preview_name(self):

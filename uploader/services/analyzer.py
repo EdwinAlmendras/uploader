@@ -10,7 +10,7 @@ import os
 
 from ..protocols import IAnalyzer
 from .resume import blake3_file
-from mediakit import is_video, is_image, analyze_video, analyze_photo
+from mediakit import is_video, is_image, analyze_video, analyze_photo as mediakit_analyze_photo
 
 
 class AnalyzerService(IAnalyzer):
@@ -57,7 +57,7 @@ class AnalyzerService(IAnalyzer):
             phash: Pre-calculated pHash (optional)
             avg_color_lab: Pre-calculated avg_color_lab (optional)
         """
-        return analyze_photo(path, include_embedding=False, phash=phash, avg_color_lab=avg_color_lab)
+        return mediakit_analyze_photo(path, phash=phash, avg_color_lab=avg_color_lab)
     
     async def analyze_async(self, path: Path) -> Dict[str, Any]:
         """Analyze media file asynchronously."""

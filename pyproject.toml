@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mega-media-uploader"
-version = "0.2.7"
+version = "0.2.8"
 description = "Centralized MEGA media upload orchestration for files and folders"
 requires-python = ">=3.10"
 dependencies = [

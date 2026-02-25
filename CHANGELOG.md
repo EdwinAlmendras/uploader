@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [0.2.8] - 2026-02-25
+
+### Fixed
+- Removed unsupported `include_embedding` argument from `uploader` photo analysis calls to match current `mediakit.analyze_photo` signature.
+- Fixed set image analysis failures caused by `TypeError: analyze_photo() got an unexpected keyword argument 'include_embedding'`.
+
+### Changed
+- Bumped project version from `0.2.7` to `0.2.8`.
+
 ## [0.2.7] - 2026-02-25
 
 ### Fixed
