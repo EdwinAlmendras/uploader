@@ -79,6 +79,8 @@ class FolderUploadHandler:
             analyzer=self._analyzer,
             blake3_deduplicator=self._blake3_deduplicator,
             preview_checker=self._preview_checker,
+            existence_checker=self._existence_checker,
+            mega_to_db_synchronizer=self._mega_to_db_synchronizer,
             config=self._config,
             hash_cache=self._hash_cache,
             skip_hash_check=self._skip_hash_check,

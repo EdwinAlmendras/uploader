@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [0.2.7] - 2026-02-25
+
+### Fixed
+- Restored MEGA-first existence checks in the active folder workflow for individual files.
+- Added MEGA->DB metadata synchronization when a file already exists in MEGA but is missing in datastore.
+- Prevented unnecessary re-uploads in MEGA-present/DB-missing cases by syncing metadata first and only uploading truly pending files.
+
+### Changed
+- Included MEGA-path skips in total skip accounting and progress summary for folder runs.
+- Bumped project version from `0.2.6` to `0.2.7`.
+
 ## [0.2.6] - 2026-02-25
 
 ### Added

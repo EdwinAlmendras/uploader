@@ -20,7 +20,12 @@ if TYPE_CHECKING:
     from uploader.services.analyzer import AnalyzerService
     from uploader.services.repository import MetadataRepository
     from uploader.services.storage import StorageService
-    from .file_existence import Blake3Deduplicator, PreviewChecker
+    from .file_existence import (
+        Blake3Deduplicator,
+        FileExistenceChecker,
+        MegaToDbSynchronizer,
+        PreviewChecker,
+    )
     from .parallel_upload import ParallelUploadCoordinator
     from .set_processor import ImageSetProcessor
     from .process import FolderUploadProcess
@@ -42,6 +47,8 @@ class FolderUploadWorkflow:
         analyzer: "AnalyzerService",
         blake3_deduplicator: Optional["Blake3Deduplicator"],
         preview_checker: Optional["PreviewChecker"],
+        existence_checker: Optional["FileExistenceChecker"],
+        mega_to_db_synchronizer: Optional["MegaToDbSynchronizer"],
         config: UploadConfig,
         hash_cache: Optional[HashCache],
         skip_hash_check: Callable[[], bool],
@@ -55,6 +62,8 @@ class FolderUploadWorkflow:
         self._analyzer = analyzer
         self._blake3_deduplicator = blake3_deduplicator
         self._preview_checker = preview_checker
+        self._existence_checker = existence_checker
+        self._mega_to_db_synchronizer = mega_to_db_synchronizer
         self._config = config
         self._hash_cache = hash_cache
         self._skip_hash_check = skip_hash_check
@@ -357,8 +366,131 @@ class FolderUploadWorkflow:
     ) -> None:
         logger.info("Processing %d individual file(s)...", len(individual_files))
 
+        skipped_in_mega = 0
         skipped_hash = 0
         files_to_check_db = individual_files
+
+        if files_to_check_db and self._existence_checker:
+            if process:
+                await process.set_phase(
+                    ProcessPhase.CHECKING_MEGA,
+                    "Checking existing files in MEGA...",
+                )
+            pending_with_rel, skipped_in_mega, mega_files_info = await self._existence_checker.check(
+                files_to_check_db,
+                folder_path,
+                dest_path,
+                len(files_to_check_db),
+                progress_callback,
+            )
+            files_to_check_db = [file_path for file_path, _ in pending_with_rel]
+
+            if process:
+                await process.complete_phase(
+                    "checking_mega",
+                    f"{skipped_in_mega} already in MEGA, {len(files_to_check_db)} to dedup",
+                )
+                async with process._stats_lock:
+                    process._stats["skipped"] = skipped_in_mega
+                await process._events.emit("progress", process.stats)
+
+            if (
+                mega_files_info
+                and self._repository
+                and self._mega_to_db_synchronizer
+                and not (process and process.is_cancelled)
+            ):
+                if process:
+                    await process.set_phase(
+                        ProcessPhase.SYNCING,
+                        f"Syncing {len(mega_files_info)} MEGA file(s) to DB...",
+                    )
+
+                synced_count = 0
+                sync_failed = 0
+                total_mega_files = len(mega_files_info)
+                for idx, (file_path, mega_info) in enumerate(mega_files_info.items(), 1):
+                    if process and process.is_cancelled:
+                        break
+
+                    if process:
+                        await process.emit_sync_start(file_path.name)
+                        await process.emit_phase_progress(
+                            "syncing",
+                            f"Syncing {idx}/{total_mega_files}: {file_path.name}",
+                            idx - 1,
+                            total_mega_files,
+                            file_path.name,
+                        )
+
+                    source_id = mega_info.source_id
+                    if not source_id:
+                        sync_failed += 1
+                        logger.warning(
+                            "Cannot sync '%s' from MEGA to DB: missing source_id on MEGA node",
+                            file_path.name,
+                        )
+                        all_results.append(
+                            UploadResult.fail(
+                                file_path.name,
+                                "exists in MEGA but missing source_id; cannot sync to DB",
+                            )
+                        )
+                        if process:
+                            await process.emit_sync_complete(file_path.name, False)
+                        continue
+
+                    exists_in_db = await self._repository.exists_by_source_id(source_id)
+                    if exists_in_db:
+                        if process:
+                            await process.emit_sync_complete(file_path.name, True)
+                        continue
+
+                    synced_id = await self._mega_to_db_synchronizer.sync_file(
+                        file_path,
+                        mega_info,
+                        dest_path,
+                    )
+                    sync_ok = bool(synced_id)
+                    if sync_ok:
+                        synced_count += 1
+                    else:
+                        sync_failed += 1
+                        all_results.append(
+                            UploadResult.fail(
+                                file_path.name,
+                                "exists in MEGA but failed to sync metadata to DB",
+                            )
+                        )
+                    if process:
+                        await process.emit_sync_complete(file_path.name, sync_ok)
+                        await process.emit_phase_progress(
+                            "syncing",
+                            (
+                                f"Synced {idx}/{total_mega_files}: {file_path.name}"
+                                if sync_ok
+                                else f"Sync failed {idx}/{total_mega_files}: {file_path.name}"
+                            ),
+                            idx,
+                            total_mega_files,
+                            file_path.name,
+                        )
+
+                if process:
+                    await process.complete_phase(
+                        "syncing",
+                        f"{synced_count} synced, {sync_failed} failed",
+                    )
+
+                if sync_failed:
+                    logger.warning(
+                        "MEGA->DB sync finished with failures: synced=%d failed=%d",
+                        synced_count,
+                        sync_failed,
+                    )
+                else:
+                    logger.info("MEGA->DB sync finished: %d synced", synced_count)
+
         if files_to_check_db and self._blake3_deduplicator and not self._skip_hash_check():
             if process:
                 await process.set_phase(ProcessPhase.HASHING, "Calculating hashes...")
@@ -391,11 +523,12 @@ class FolderUploadWorkflow:
             if not self._blake3_deduplicator:
                 logger.warning("Blake3Deduplicator not available, skipping database check")
 
-        total_skipped = skipped_hash
+        total_skipped = skipped_in_mega + skipped_hash
         logger.info(
-            "Existence check summary: %d individual files, %d skipped by blake3_hash, "
-            "%d total skipped, %d files to upload",
+            "Existence check summary: %d individual files, %d skipped by MEGA path, "
+            "%d skipped by blake3_hash, %d total skipped, %d files to upload",
             len(individual_files),
+            skipped_in_mega,
             skipped_hash,
             total_skipped,
             len(pending_files),
