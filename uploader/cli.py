@@ -101,6 +101,14 @@ def _setup_logging(debug: bool, silent: bool, log_level: Optional[str]) -> str:
         _LAST_ERROR_LOG_PATH = None
 
     if not enable_console:
+        # Some third-party libs attach their own stream handlers; force them to
+        # inherit root behavior and suppress noisy INFO traffic in silent mode.
+        for noisy_name in ("megapy", "mega_account", "httpx", "httpcore", "asyncio"):
+            noisy_logger = logging.getLogger(noisy_name)
+            noisy_logger.setLevel(logging.WARNING)
+            for noisy_handler in list(noisy_logger.handlers):
+                noisy_logger.removeHandler(noisy_handler)
+            noisy_logger.propagate = True
         return mode
 
     try:

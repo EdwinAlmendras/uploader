@@ -262,7 +262,21 @@ class FolderUploadWorkflow:
                 ProcessPhase.CHECKING_MEGA,
                 f"Checking {len(sets)} set(s) in DB/MEGA...",
             )
-        set_check_results = await self._batch_check_sets(sets)
+        async def set_check_progress(current: int, total_count: int, message: str) -> None:
+            if progress_callback:
+                progress_callback(message, current, total_count)
+            elif process:
+                await process.emit_phase_progress(
+                    "checking_mega",
+                    message,
+                    current,
+                    total_count,
+                )
+
+        set_check_results = await self._batch_check_sets(
+            sets,
+            progress_callback=set_check_progress,
+        )
         if process:
             await process.complete_phase("checking_mega", f"Checked {len(sets)} set(s)")
             await process.set_phase(
@@ -681,11 +695,18 @@ class FolderUploadWorkflow:
                     cleanup_exc,
                 )
 
-    async def _batch_check_sets(self, sets: List[Path]) -> Dict[Path, Dict[str, Any]]:
+    async def _batch_check_sets(
+        self,
+        sets: List[Path],
+        progress_callback: Optional[Callable[[int, int, str], Any]] = None,
+    ) -> Dict[Path, Dict[str, Any]]:
         deduplicator = SetBatchDeduplicator(
             repository=self._repository,
             storage=self._storage,
             hash_cache=self._hash_cache,
             skip_hash_check=self._skip_hash_check,
         )
-        return await deduplicator.check_sets(sets)
+        return await deduplicator.check_sets(
+            sets,
+            progress_callback=progress_callback,
+        )

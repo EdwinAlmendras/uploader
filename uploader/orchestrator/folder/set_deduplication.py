@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 import logging
+import inspect
 
 from uploader.services.hash_cache import HashCache
 from uploader.services.repository import MetadataRepository
@@ -68,7 +69,11 @@ class SetBatchDeduplicator:
         self._resolve_hash = ResolveFileHashUseCase()
         self._resolve_action = ResolveDedupActionUseCase()
 
-    async def check_sets(self, sets: List[Path]) -> Dict[Path, Dict[str, Any]]:
+    async def check_sets(
+        self,
+        sets: List[Path],
+        progress_callback: Optional[Callable[[int, int, str], Any]] = None,
+    ) -> Dict[Path, Dict[str, Any]]:
         """
         Check set archives in batch.
 
@@ -114,7 +119,18 @@ class SetBatchDeduplicator:
             results[set_folder] = SetCheckInfo(hash=archive_hash, from_cache=False)
 
         if hashes_to_sets and self._repository:
-            merged = await self._fetch_and_merge_results(hashes_to_sets, results)
+            total_hashes = len(hashes_to_sets)
+            await self._emit_progress(
+                progress_callback,
+                0,
+                total_hashes,
+                f"Checking set hashes in DB/MEGA... 0/{total_hashes}",
+            )
+            merged = await self._fetch_and_merge_results(
+                hashes_to_sets,
+                results,
+                progress_callback=progress_callback,
+            )
             results.update(merged)
 
         total_existing = sum(1 for info in results.values() if info.exists_in_both)
@@ -152,9 +168,12 @@ class SetBatchDeduplicator:
         self,
         hashes_to_sets: Dict[str, Path],
         base_results: Dict[Path, SetCheckInfo],
+        progress_callback: Optional[Callable[[int, int, str], Any]] = None,
     ) -> Dict[Path, SetCheckInfo]:
         merged = dict(base_results)
         all_hashes = list(hashes_to_sets.keys())
+        total_hashes = len(all_hashes)
+        checked_hashes = 0
         for batch in self._chunked(all_hashes, self._batch_size):
             existing_hashes: Dict[str, Dict[str, Any]]
             try:
@@ -190,8 +209,31 @@ class SetBatchDeduplicator:
                     exists_in_both=decision.action == "skip",
                     from_cache=previous.from_cache,
                 )
+                checked_hashes += 1
+                await self._emit_progress(
+                    progress_callback,
+                    checked_hashes,
+                    total_hashes,
+                    f"Checked set {checked_hashes}/{total_hashes}: {set_folder.name}",
+                )
 
         return merged
+
+    @staticmethod
+    async def _emit_progress(
+        progress_callback: Optional[Callable[[int, int, str], Any]],
+        current: int,
+        total: int,
+        message: str,
+    ) -> None:
+        if not progress_callback:
+            return
+        try:
+            maybe_result = progress_callback(current, total, message)
+            if inspect.isawaitable(maybe_result):
+                await maybe_result
+        except Exception as exc:
+            logger.debug("Set dedup progress callback failed: %s", exc)
 
     @staticmethod
     def _chunked(values: List[str], size: int) -> Iterable[List[str]]:
