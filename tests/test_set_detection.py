@@ -155,7 +155,16 @@ class TestImageSetProcessor:
         repo = MagicMock(spec=MetadataRepository)
         repo.save_document = AsyncMock()
         repo.save_photo_metadata = AsyncMock()
+        repo.save_batch = AsyncMock()
         repo.save_set_document = AsyncMock()
+        repo.check_exists_batch = AsyncMock(return_value={})
+        repo.prepare_document = MagicMock(side_effect=lambda data: dict(data))
+        repo.prepare_photo_metadata = MagicMock(
+            side_effect=lambda document_id, data: {
+                "document_id": document_id,
+                "set_doc_id": data.get("set_doc_id"),
+            }
+        )
         return repo
     
     @pytest.fixture
@@ -164,6 +173,7 @@ class TestImageSetProcessor:
         storage.upload_video = AsyncMock(return_value="mega_handle_123")
         storage.upload_preview = AsyncMock(return_value="preview_handle_123")
         storage.create_folder = AsyncMock(return_value="folder_handle")
+        storage.exists_by_mega_id = AsyncMock(return_value=False)
         return storage
     
     @pytest.fixture
@@ -227,21 +237,18 @@ class TestImageSetProcessor:
                 None
             )
         
-        # Verify that save_document was called with set_doc_id
-        calls = mock_repository.save_document.call_args_list
-        
-        # Should have calls for images (with set_doc_id) and set document
-        image_calls = [c for c in calls if 'set_doc_id' in str(c)]
-        assert len(image_calls) >= 2  # At least 2 images
-        
-        # Verify set_doc_id is present in image document calls
-        for call in image_calls:
-            call_kwargs = call[1] if call[0] == () else {}
-            call_args = call[0] if call[0] != () else []
-            # Check if set_doc_id is in the data
-            if call_args:
-                data = call_args[0]
-                assert 'set_doc_id' in data
+        # Verify batch persistence contains set_doc_id in image document payloads.
+        mock_repository.save_batch.assert_awaited_once()
+        call = mock_repository.save_batch.call_args
+        batch_payload = call.kwargs.get("items") if call and call.kwargs else None
+        if batch_payload is None and call and call.args:
+            batch_payload = call.args[0]
+        batch_payload = batch_payload or []
+        assert len(batch_payload) >= 2
+        for item in batch_payload:
+            document = item.get("document", {})
+            assert "set_doc_id" in document
+            assert document["set_doc_id"] is not None
     
     @pytest.mark.asyncio
     async def test_process_set_creates_and_uploads_7z(
@@ -339,9 +346,17 @@ class TestFolderUploadHandlerWithSets:
         repo = MagicMock(spec=MetadataRepository)
         repo.save_document = AsyncMock()
         repo.save_photo_metadata = AsyncMock()
+        repo.save_batch = AsyncMock()
         repo.save_video_metadata = AsyncMock()
         repo.save_set_document = AsyncMock()
         repo.check_exists_batch = AsyncMock(return_value={})
+        repo.prepare_document = MagicMock(side_effect=lambda data: dict(data))
+        repo.prepare_photo_metadata = MagicMock(
+            side_effect=lambda document_id, data: {
+                "document_id": document_id,
+                "set_doc_id": data.get("set_doc_id"),
+            }
+        )
         return repo
     
     @pytest.fixture
@@ -351,6 +366,7 @@ class TestFolderUploadHandlerWithSets:
         storage.upload_preview = AsyncMock(return_value="preview_handle_123")
         storage.create_folder = AsyncMock(return_value="folder_handle")
         storage.exists = AsyncMock(return_value=False)
+        storage.exists_by_mega_id = AsyncMock(return_value=False)
         return storage
     
     @pytest.fixture

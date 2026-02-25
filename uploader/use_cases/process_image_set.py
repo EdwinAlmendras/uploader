@@ -12,6 +12,7 @@ from mediakit.analyzer import generate_id
 
 from uploader.orchestrator.models import UploadResult
 from uploader.services.resume import blake3_file
+from uploader.use_cases.deduplication import parse_repository_doc_info
 
 logger = logging.getLogger(__name__)
 
@@ -47,56 +48,14 @@ class ProcessImageSetUseCase:
             archive_name = f"{set_name}.7z"
             existing_archive_path = set_folder.parent / "files" / archive_name
 
-            if pre_check_info and pre_check_info.get("exists_in_both"):
+            if pre_check_info:
                 existing_source_id = pre_check_info.get("source_id")
                 existing_mega_handle = pre_check_info.get("mega_handle")
                 archive_hash = pre_check_info.get("hash")
-                archive_exists_in_both = True
-            else:
-                archive_file_for_hash = existing_archive_path if existing_archive_path.exists() else None
-                if archive_file_for_hash and archive_file_for_hash.exists():
-                    try:
-                        logger.debug("Calculating hash for archive: %s", archive_file_for_hash.name)
-                        if progress_callback:
-                            progress_callback("Calculating archive hash...", 10, 100)
-                        archive_hash = await blake3_file(archive_file_for_hash)
-                        logger.debug("Archive hash: %s", archive_hash)
-                        if self._processor._repository:
-                            existing_hashes = await self._processor._repository.check_exists_batch(
-                                [archive_hash]
-                            )
-                            if archive_hash in existing_hashes:
-                                doc_info = existing_hashes[archive_hash]
-                                if isinstance(doc_info, dict):
-                                    existing_source_id = doc_info.get("source_id")
-                                    existing_mega_handle = doc_info.get("mega_handle")
-                                else:
-                                    existing_source_id = doc_info
-                                if existing_source_id:
-                                    exists_in_mega = await self._processor._exists_in_mega(
-                                        existing_source_id
-                                    )
-                                    if exists_in_mega:
-                                        archive_exists_in_both = True
-                        else:
-                            logger.warning("Repository not initialized, skipping DB check")
-                    except Exception as exc:
-                        logger.warning("Error checking archive existence: %s", exc, exc_info=True)
-                elif pre_check_info:
-                    archive_hash = pre_check_info.get("hash")
-                    existing_source_id = pre_check_info.get("source_id")
-                    existing_mega_handle = pre_check_info.get("mega_handle")
+                archive_exists_in_both = bool(pre_check_info.get("exists_in_both"))
 
             if archive_exists_in_both and existing_source_id:
                 return (UploadResult.ok(existing_source_id, set_name, existing_mega_handle, None), [])
-
-            cover = self._processor._selector.select_cover(images)
-            perceptual_features = await self._processor._generate_thumbnails(
-                set_folder, images, progress_callback
-            )
-            if progress_callback:
-                progress_callback("Generating grid preview...", 25, 100)
-            grid_preview_path = await self._processor._generate_grid_preview(set_folder, len(images))
 
             if existing_source_id and not archive_exists_in_both:
                 set_source_id = existing_source_id
@@ -105,11 +64,70 @@ class ProcessImageSetUseCase:
                 set_source_id = generate_id()
                 logger.debug("Generated new set source_id: %s", set_source_id)
 
-            skip_image_processing = (
-                existing_archive_path.exists() and existing_source_id and not archive_exists_in_both
-            )
+            # Ensure archive exists first, so hash dedup can happen before expensive image processing.
+            if existing_archive_path.exists():
+                archive_files = [existing_archive_path]
+            else:
+                logger.info("Creating 7z archive: %s", archive_name)
+                if progress_callback:
+                    progress_callback(f"Creating archive: {archive_name}...", 10, 100)
+                archive_files = self._processor._archiver.create(set_folder, archive_name)
+                if not archive_files:
+                    return (UploadResult.fail(set_name, "Failed to create 7z archive"), [])
+                logger.debug("Created %d archive file(s)", len(archive_files))
+
+            if not archive_hash and archive_files and archive_files[0].exists():
+                try:
+                    logger.debug("Calculating hash for archive before saving: %s", archive_files[0].name)
+                    if progress_callback:
+                        progress_callback("Calculating archive hash...", 20, 100)
+                    archive_hash = await blake3_file(archive_files[0])
+                    logger.debug("Archive hash calculated: %s", archive_hash)
+                except Exception as exc:
+                    logger.warning("Failed to calculate archive hash: %s", exc)
+
+            if (
+                not archive_exists_in_both
+                and archive_hash
+                and self._processor._repository
+            ):
+                try:
+                    existing_hashes = await self._processor._repository.check_exists_batch([archive_hash])
+                    doc_info = existing_hashes.get(archive_hash)
+                    if doc_info:
+                        detected_source_id, detected_mega_handle = parse_repository_doc_info(doc_info)
+                        if detected_source_id:
+                            existing_source_id = detected_source_id
+                            existing_mega_handle = detected_mega_handle or existing_mega_handle
+                            exists_in_mega = await self._processor._exists_in_mega(existing_source_id)
+                            if exists_in_mega:
+                                logger.info(
+                                    "Set archive already exists in DB and MEGA (source_id=%s), skipping set %s",
+                                    existing_source_id,
+                                    set_name,
+                                )
+                                return (
+                                    UploadResult.ok(existing_source_id, set_name, existing_mega_handle, None),
+                                    [],
+                                )
+                            # Reuse existing set source_id if DB has the archive but MEGA does not.
+                            set_source_id = existing_source_id
+                except Exception as exc:
+                    logger.warning("Archive hash dedup check failed for %s: %s", set_name, exc, exc_info=True)
+
+            skip_image_processing = bool(existing_source_id)
             image_results: List[UploadResult] = []
+            cover = self._processor._selector.select_cover(images)
+            grid_preview_path: Optional[Path] = None
             if not skip_image_processing:
+                perceptual_features = await self._processor._generate_thumbnails(
+                    set_folder,
+                    images,
+                    progress_callback,
+                )
+                if progress_callback:
+                    progress_callback("Generating grid preview...", 40, 100)
+                grid_preview_path = await self._processor._generate_grid_preview(set_folder, len(images))
                 image_results = await self._processor._process_set_images(
                     set_folder,
                     images,
@@ -118,26 +136,14 @@ class ProcessImageSetUseCase:
                     perceptual_features=perceptual_features,
                 )
             else:
-                logger.debug("Skipping image processing - using existing 7z from files/ subfolder")
-
-            if existing_archive_path.exists() and existing_source_id and not archive_exists_in_both:
-                archive_files = [existing_archive_path]
-            else:
-                logger.info("Creating 7z archive: %s", archive_name)
+                logger.debug(
+                    "Skipping image metadata processing for set %s (existing source_id=%s)",
+                    set_name,
+                    existing_source_id,
+                )
                 if progress_callback:
-                    progress_callback(f"Creating archive: {archive_name}...", 60, 100)
-                archive_files = self._processor._archiver.create(set_folder, archive_name)
-                if not archive_files:
-                    return (UploadResult.fail(set_name, "Failed to create 7z archive"), image_results)
-                logger.debug("Created %d archive file(s)", len(archive_files))
-
-            if not archive_hash and archive_files and archive_files[0].exists():
-                try:
-                    logger.debug("Calculating hash for archive before saving: %s", archive_files[0].name)
-                    archive_hash = await blake3_file(archive_files[0])
-                    logger.debug("Archive hash calculated: %s", archive_hash)
-                except Exception as exc:
-                    logger.warning("Failed to calculate archive hash: %s", exc)
+                    progress_callback("Generating grid preview...", 40, 100)
+                grid_preview_path = await self._processor._generate_grid_preview(set_folder, len(images))
 
             mega_handles = []
             for idx, archive_file in enumerate(archive_files, 1):

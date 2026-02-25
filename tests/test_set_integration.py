@@ -62,9 +62,17 @@ class MockServices:
         repo = MagicMock(spec=MetadataRepository)
         repo.save_document = AsyncMock()
         repo.save_photo_metadata = AsyncMock()
+        repo.save_batch = AsyncMock()
         repo.save_video_metadata = AsyncMock()
         repo.save_set_document = AsyncMock()
         repo.check_exists_batch = AsyncMock(return_value={})
+        repo.prepare_document = MagicMock(side_effect=lambda data: dict(data))
+        repo.prepare_photo_metadata = MagicMock(
+            side_effect=lambda document_id, data: {
+                "document_id": document_id,
+                "set_doc_id": data.get("set_doc_id"),
+            }
+        )
         return repo
     
     def _create_storage(self):
@@ -72,6 +80,7 @@ class MockServices:
         storage.upload_video = AsyncMock(return_value="mega_handle_123")
         storage.create_folder = AsyncMock(return_value="folder_handle")
         storage.exists = AsyncMock(return_value=False)
+        storage.exists_by_mega_id = AsyncMock(return_value=False)
         return storage
     
     def _create_preview_handler(self):
@@ -475,25 +484,18 @@ class TestSetIntegration:
                 None
             )
         
-        # Verify save_document was called for images with set_doc_id
-        save_calls = mock_services.repository.save_document.call_args_list
-        
-        # Find calls with set_doc_id (image documents)
-        image_calls = []
-        for call in save_calls:
-            args = call[0] if call[0] else []
-            kwargs = call[1] if len(call) > 1 else {}
-            # Check if this is an image call (has set_doc_id)
-            if args and isinstance(args[0], dict) and 'set_doc_id' in args[0]:
-                image_calls.append(args[0])
-        
-        # Should have at least 2 image calls (we have 3 images in the set)
-        assert len(image_calls) >= 2
-        
-        # All image calls should have set_doc_id
-        for call_data in image_calls:
-            assert 'set_doc_id' in call_data
-            assert call_data['set_doc_id'] is not None
+        # Verify save_batch was called and every document includes set_doc_id.
+        mock_services.repository.save_batch.assert_awaited_once()
+        call = mock_services.repository.save_batch.call_args
+        batch_payload = call.kwargs.get("items") if call and call.kwargs else None
+        if batch_payload is None and call and call.args:
+            batch_payload = call.args[0]
+        batch_payload = batch_payload or []
+        assert len(batch_payload) >= 2
+        for item in batch_payload:
+            document = item.get("document", {})
+            assert "set_doc_id" in document
+            assert document["set_doc_id"] is not None
     
     @pytest.mark.asyncio
     async def test_multiple_sets_processed_sequentially(

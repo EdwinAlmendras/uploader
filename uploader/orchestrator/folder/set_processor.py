@@ -57,9 +57,7 @@ class ImageSetProcessor:
         self._preview_generator = ImagePreviewGenerator(cell_size=400)
         
         self._archiver = SevenZipArchiver(ArchiveConfig(compression_level=0, output_dir=None))
-        self._use_batch_set_save = os.getenv(
-            "UPLOADER_USE_BATCH_SET_SAVE", ""
-        ).strip().lower() in {"1", "true", "yes", "on"}
+        self._set_batch_retry_max = self._resolve_set_batch_retry_max()
     
     async def process_set(
         self,
@@ -357,20 +355,19 @@ class ImageSetProcessor:
         """
         Process all images in the set.
 
-        Analysis always happens first; persistence can run in per-image mode
-        (default, clearer error tracking) or batch mode via env flag.
+        Analysis runs first, then persistence happens via batch API with retry.
+        On retry, only image source IDs are regenerated; set_source_id is fixed.
         
         Args:
             perceptual_features: Optional dict mapping image_path -> (phash, avg_color_lab)
                 If provided, these values will be used instead of recalculating them.
         """
         results = []
-        batch_items = []  # Accumulate data for optional batch POST
         
         logger.debug(f"Processing {len(images)} images for set...")
         
         # Step 1: Analyze all images first (can be done in parallel if needed)
-        analyzed_images = []
+        analyzed_images: List[Tuple[Path, Dict[str, Any]]] = []
         for idx, image_path in enumerate(images, 1):
             try:
                 if progress_callback:
@@ -401,64 +398,137 @@ class ImageSetProcessor:
                 # Add set_doc_id reference
                 tech_data["set_doc_id"] = set_source_id
                 
-                analyzed_images.append((image_path, image_source_id, tech_data))
+                analyzed_images.append((image_path, tech_data))
                 
             except Exception as e:
                 logger.error(f"Error analyzing image {image_path.name}: {e}")
                 results.append(
                     UploadResult.fail(image_path.name, str(e))
                 )
-        
-        # Step 2: Persist analyzed images. Default path is per-image writes for
-        # clearer failure isolation and easier monitoring; batch mode is opt-in.
-        successful_images = []  # Track images queued for batch persistence
-        for image_path, image_source_id, tech_data in analyzed_images:
-            try:
-                if self._use_batch_set_save:
-                    document_data = self._repository.prepare_document(tech_data)
-                    photo_metadata = self._repository.prepare_photo_metadata(image_source_id, tech_data)
-                    batch_items.append({
-                        "document": document_data,
-                        "photo_metadata": photo_metadata,
-                    })
-                    successful_images.append((image_path, image_source_id))
-                    continue
 
-                await self._repository.save_document(tech_data)
-                await self._repository.save_photo_metadata(image_source_id, tech_data)
-                results.append(UploadResult.ok(image_source_id, image_path.name, None, None))
-                logger.debug("Saved image %s with set_doc_id=%s", image_path.name, set_source_id)
-            except Exception as e:
-                logger.error(f"Error saving metadata for {image_path.name}: {e}")
-                results.append(UploadResult.fail(image_path.name, str(e)))
-
-        # Step 3: Optional batch persistence path.
-        if self._use_batch_set_save and batch_items:
-            try:
-                if progress_callback:
-                    progress_callback(
-                        f"Saving {len(batch_items)} images to API (batch)...",
-                        60,
-                        100
-                    )
-
-                logger.info(f"Saving {len(batch_items)} images to API in batch...")
-                await self._repository.save_batch(batch_items)
-
-                for image_path, image_source_id in successful_images:
-                    results.append(UploadResult.ok(image_source_id, image_path.name, None, None))
-                    logger.debug(f"Saved image {image_path.name} with set_doc_id={set_source_id}")
-
-                logger.info(f"Successfully saved {len(batch_items)} images in batch")
-            except Exception as e:
-                logger.error(f"Error saving batch to API: {e}", exc_info=True)
-                for image_path, image_source_id in successful_images:
-                    results.append(
-                        UploadResult.fail(image_path.name, f"Batch save failed: {str(e)}")
-                    )
+        if analyzed_images:
+            batch_results = await self._save_images_batch_with_retry(
+                analyzed_images,
+                set_source_id,
+                progress_callback,
+            )
+            results.extend(batch_results)
         
         logger.debug(f"Processed {len(results)} images for set ({len([r for r in results if r.success])} successful)")
         return results
+
+    def _resolve_set_batch_retry_max(self) -> int:
+        raw = os.getenv("UPLOADER_SET_BATCH_RETRY_MAX", "3").strip()
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning(
+                "Invalid UPLOADER_SET_BATCH_RETRY_MAX=%r. Using default=3.",
+                raw,
+            )
+            return 3
+
+    @staticmethod
+    def _regenerate_image_ids(
+        analyzed_images: List[Tuple[Path, Dict[str, Any]]],
+        set_source_id: str,
+    ) -> None:
+        seen: set[str] = set()
+        for _image_path, tech_data in analyzed_images:
+            next_id = generate_id(SET_IMAGE_SOURCE_ID_LENGTH)
+            while next_id in seen:
+                next_id = generate_id(SET_IMAGE_SOURCE_ID_LENGTH)
+            seen.add(next_id)
+            tech_data["source_id"] = next_id
+            tech_data["set_doc_id"] = set_source_id
+
+    def _build_batch_items(
+        self,
+        analyzed_images: List[Tuple[Path, Dict[str, Any]]],
+        set_source_id: str,
+    ) -> Tuple[List[Dict[str, Any]], List[Tuple[Path, str]]]:
+        batch_items: List[Dict[str, Any]] = []
+        image_refs: List[Tuple[Path, str]] = []
+
+        for image_path, tech_data in analyzed_images:
+            image_source_id = str(tech_data.get("source_id") or "")
+            if not image_source_id:
+                image_source_id = generate_id(SET_IMAGE_SOURCE_ID_LENGTH)
+                tech_data["source_id"] = image_source_id
+            tech_data["set_doc_id"] = set_source_id
+            document_data = self._repository.prepare_document(tech_data)
+            photo_metadata = self._repository.prepare_photo_metadata(image_source_id, tech_data)
+            batch_items.append(
+                {
+                    "document": document_data,
+                    "photo_metadata": photo_metadata,
+                }
+            )
+            image_refs.append((image_path, image_source_id))
+
+        return batch_items, image_refs
+
+    async def _save_images_batch_with_retry(
+        self,
+        analyzed_images: List[Tuple[Path, Dict[str, Any]]],
+        set_source_id: str,
+        progress_callback: Optional[Callable],
+    ) -> List[UploadResult]:
+        attempts = self._set_batch_retry_max
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, attempts + 1):
+            batch_items, image_refs = self._build_batch_items(analyzed_images, set_source_id)
+            if progress_callback:
+                progress_callback(
+                    f"Saving {len(batch_items)} images to API (batch attempt {attempt}/{attempts})...",
+                    60,
+                    100,
+                )
+            logger.info(
+                "Saving %d images to API in batch (attempt %d/%d)",
+                len(batch_items),
+                attempt,
+                attempts,
+            )
+            try:
+                await self._repository.save_batch(batch_items)
+                logger.info(
+                    "Successfully saved %d images in batch on attempt %d/%d",
+                    len(batch_items),
+                    attempt,
+                    attempts,
+                )
+                return [
+                    UploadResult.ok(image_source_id, image_path.name, None, None)
+                    for image_path, image_source_id in image_refs
+                ]
+            except Exception as exc:
+                last_error = exc
+                logger.error(
+                    "Batch save failed on attempt %d/%d for set_doc_id=%s: %s",
+                    attempt,
+                    attempts,
+                    set_source_id,
+                    exc,
+                    exc_info=True,
+                )
+                if attempt >= attempts:
+                    break
+                self._regenerate_image_ids(analyzed_images, set_source_id)
+                logger.warning(
+                    "Retrying batch save with regenerated image IDs for set_doc_id=%s",
+                    set_source_id,
+                )
+
+        message = str(last_error) if last_error else "unknown batch error"
+        return [
+            UploadResult.fail(
+                image_path.name,
+                f"Batch save failed after {attempts} attempts: {message}",
+            )
+            for image_path, _tech_data in analyzed_images
+        ]
 
     async def _analyze_photo_with_optional_features(
         self,
