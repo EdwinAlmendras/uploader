@@ -4,12 +4,16 @@ Storage Service - Single Responsibility: upload files to cloud storage.
 Wraps MEGA client with additional logic for previews.
 """
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 
 from ..models import UploadConfig
-from megapy import MegaClient
 import logging
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from megapy import MegaClient
+else:
+    MegaClient = Any
 
 
 class StorageService:
