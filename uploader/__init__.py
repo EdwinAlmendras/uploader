@@ -47,7 +47,7 @@ try:
 except ImportError:
     _has_managed = False
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 __all__ = [
     # Main
     "UploadOrchestrator",

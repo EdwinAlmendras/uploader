@@ -10,14 +10,235 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 import hashlib
 import os
+import getpass
+import inspect
+from datetime import datetime
 from megapy import MegaClient
 from uploader.models import UploadConfig
-from mega_account import AccountManager, NoSpaceError
+
+try:
+    from mega_account import (
+        AccountManager,
+        NoSpaceError,
+        ManagedAccount,
+        AccountConnectionError,
+    )
+except ImportError:  # pragma: no cover
+    from mega_account import AccountManager, NoSpaceError
+    from mega_account.models import ManagedAccount
+    from mega_account.exceptions import AccountConnectionError
+
 from mega_account.api_client import AccountAPIClient
 from megapy.core.api.errors import MegaAPIError
 import logging
 
 logger = logging.getLogger(__name__)
+PROXY_URL = os.getenv("MEGA_PROXY_URL")
+
+
+async def _client_start(client: MegaClient, email: Optional[str] = None, password: Optional[str] = None):
+    """Start/authenticate client using namespace API when available."""
+    account_api = getattr(client, "account", None)
+    if account_api and hasattr(account_api, "start"):
+        namespace_result = account_api.start(email=email, password=password)
+        if inspect.isawaitable(namespace_result):
+            return await namespace_result
+
+    start_method = getattr(client, "start", None)
+    if callable(start_method):
+        if email is not None or password is not None:
+            legacy_result = start_method(email=email, password=password)
+        else:
+            legacy_result = start_method()
+        if inspect.isawaitable(legacy_result):
+            return await legacy_result
+        return legacy_result
+
+    raise AttributeError("MegaClient does not expose start/account.start")
+
+
+async def _client_account_info(client: MegaClient):
+    """Read account info using namespace API when available."""
+    account_api = getattr(client, "account", None)
+    if account_api and hasattr(account_api, "info"):
+        namespace_result = account_api.info()
+        if inspect.isawaitable(namespace_result):
+            return await namespace_result
+
+    legacy_method = getattr(client, "get_account_info", None)
+    if callable(legacy_method):
+        legacy_result = legacy_method()
+        if inspect.isawaitable(legacy_result):
+            return await legacy_result
+        return legacy_result
+
+    raise AttributeError("MegaClient does not expose account.info/get_account_info")
+
+
+async def _client_get(client: MegaClient, path: str):
+    tree_api = getattr(client, "tree", None)
+    if tree_api and hasattr(tree_api, "get"):
+        namespace_result = tree_api.get(path)
+        if inspect.isawaitable(namespace_result):
+            return await namespace_result
+
+    legacy_result = client.get(path)
+    if inspect.isawaitable(legacy_result):
+        return await legacy_result
+    return legacy_result
+
+
+async def _client_get_root(client: MegaClient, refresh: bool = False):
+    tree_api = getattr(client, "tree", None)
+    if tree_api and hasattr(tree_api, "get_root"):
+        namespace_result = tree_api.get_root(refresh=refresh)
+        if inspect.isawaitable(namespace_result):
+            return await namespace_result
+
+    legacy_result = client.get_root(refresh=refresh)
+    if inspect.isawaitable(legacy_result):
+        return await legacy_result
+    return legacy_result
+
+
+async def _client_load_nodes(client: MegaClient):
+    tree_api = getattr(client, "tree", None)
+    if tree_api and hasattr(tree_api, "_load_nodes"):
+        namespace_result = tree_api._load_nodes()
+        if inspect.isawaitable(namespace_result):
+            return await namespace_result
+
+    legacy_result = client._load_nodes()
+    if inspect.isawaitable(legacy_result):
+        return await legacy_result
+    return legacy_result
+
+
+async def _client_upload(client: MegaClient, *args, **kwargs):
+    files_api = getattr(client, "files", None)
+    if files_api and hasattr(files_api, "upload"):
+        namespace_result = files_api.upload(*args, **kwargs)
+        if inspect.isawaitable(namespace_result):
+            return await namespace_result
+
+    legacy_result = client.upload(*args, **kwargs)
+    if inspect.isawaitable(legacy_result):
+        return await legacy_result
+    return legacy_result
+
+
+async def _client_create_folder(client: MegaClient, name: str, parent=None):
+    files_api = getattr(client, "files", None)
+    if files_api and hasattr(files_api, "create_folder"):
+        namespace_result = files_api.create_folder(name, parent)
+        if inspect.isawaitable(namespace_result):
+            return await namespace_result
+
+    legacy_result = client.create_folder(name, parent)
+    if inspect.isawaitable(legacy_result):
+        return await legacy_result
+    return legacy_result
+
+
+async def _client_move(client: MegaClient, source, destination):
+    files_api = getattr(client, "files", None)
+    if files_api and hasattr(files_api, "move"):
+        namespace_result = files_api.move(source, destination)
+        if inspect.isawaitable(namespace_result):
+            return await namespace_result
+
+    legacy_result = client.move(source, destination)
+    if inspect.isawaitable(legacy_result):
+        return await legacy_result
+    return legacy_result
+
+
+class NamespaceAwareAccountManager(AccountManager):
+    """
+    AccountManager adaptation for MegaClient namespace API.
+
+    Uses `client.account.*`, `client.tree.*`, and `client.files.*` APIs directly
+    instead of legacy top-level client methods.
+    """
+
+    async def _refresh_account(self, account: ManagedAccount) -> None:
+        try:
+            client = await self._get_or_create_client(account)
+            info = await _client_account_info(client)
+
+            account.space_free = info.space_free
+            account.space_total = info.space_total
+            account.space_used = info.space_used
+            account.last_checked = datetime.now()
+            account.is_active = True
+
+            logger.debug("Refreshed %s: %.1f GB free", account.name, account.space_free_gb)
+        except Exception as exc:
+            logger.error("Failed to refresh %s: %s", account.name, exc)
+            account.is_active = False
+
+    async def _get_or_create_client(self, account: ManagedAccount) -> MegaClient:
+        if account.name not in self._clients:
+            config = MegaClient.create_config(proxy=PROXY_URL)
+            client = MegaClient(str(account.session_path), config=config)
+            await _client_start(client)
+            self._clients[account.name] = client
+
+        return self._clients[account.name]
+
+    async def create_new_session(
+        self,
+        name: Optional[str] = None,
+        email: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> ManagedAccount:
+        if not email:
+            print("\n📧 New MEGA account login required")
+            email = input("  Email: ").strip()
+
+        if not name:
+            email_hash = hashlib.md5(email.lower().encode()).hexdigest()
+            name = email_hash
+
+        session_path = self._sessions_dir / f"{name}.session"
+        if session_path.exists():
+            logger.warning("Session %s already exists, loading it", name)
+            return await self.add_account(session_path, name)
+
+        if not password:
+            password = getpass.getpass("  Password: ")
+
+        print(f"  Logging in as {email}...")
+        config = MegaClient.create_config(proxy=PROXY_URL)
+        client = MegaClient(str(session_path), config=config)
+        try:
+            await _client_start(client, email=email, password=password)
+            info = await _client_account_info(client)
+
+            account = ManagedAccount(
+                session_path=session_path,
+                name=name,
+                space_free=info.space_free,
+                space_total=info.space_total,
+                space_used=info.space_used,
+                last_checked=datetime.now(),
+                is_active=True,
+                priority=len(self._accounts),
+            )
+
+            self._accounts[name] = account
+            self._clients[name] = client
+
+            print(f"  ✓ Logged in! Free space: {account.space_free_gb:.1f} GB")
+            logger.info("Created new session: %s (%s)", name, email)
+            return account
+        except Exception as exc:
+            if session_path.exists():
+                try:
+                    session_path.unlink()
+                except OSError:
+                    pass
+            raise AccountConnectionError(name, exc)
 
 
 class ManagedStorageService:
@@ -98,7 +319,7 @@ class ManagedStorageService:
         else:
             # Default behavior: load all sessions from directory
             if self._manager is None:
-                self._manager = AccountManager(
+                self._manager = NamespaceAwareAccountManager(
                     sessions_dir=self._sessions_dir,
                     buffer_mb=self._buffer_mb,
                     auto_create=self._auto_create
@@ -144,7 +365,7 @@ class ManagedStorageService:
             if not session_paths:
                 logger.warning(f"No session files found for collection: {self._collection_name}")
                 # Fall back to loading all sessions
-                self._manager = AccountManager(
+                self._manager = NamespaceAwareAccountManager(
                     sessions_dir=self._sessions_dir,
                     buffer_mb=self._buffer_mb,
                     auto_create=self._auto_create
@@ -155,7 +376,7 @@ class ManagedStorageService:
             logger.info(f"Loading {len(session_paths)} session(s) from collection")
             
             # Create AccountManager with only these session paths
-            self._manager = AccountManager.from_session_paths(
+            self._manager = NamespaceAwareAccountManager.from_session_paths(
                 session_paths=session_paths,
                 buffer_mb=self._buffer_mb,
                 auto_create=self._auto_create
@@ -171,7 +392,7 @@ class ManagedStorageService:
             logger.error(f"Failed to load collection {self._collection_name}: {e}")
             logger.info("Falling back to loading all sessions from directory")
             # Fall back to loading all sessions
-            self._manager = AccountManager(
+            self._manager = NamespaceAwareAccountManager(
                 sessions_dir=self._sessions_dir,
                 buffer_mb=self._buffer_mb,
                 auto_create=self._auto_create
@@ -374,7 +595,8 @@ class ManagedStorageService:
                 
                 # Upload with mega_id
                 logger.debug(f"Starting upload to handle={dest_handle}, filename={path.name}")
-                node = await client.upload(
+                node = await _client_upload(
+                    client,
                     path,
                     dest_folder=dest_handle,
                     progress_callback=progress_callback,
@@ -452,12 +674,23 @@ class ManagedStorageService:
             # Normalize path - ensure it starts with /
             if not path.startswith("/"):
                 path = f"/{path}"
-            # Use AccountManager.find_in_accounts() which searches all accounts
-            result = await self._manager.find_in_accounts(path)
-            if result:
-                # find_in_accounts returns (node, account_name) or None
-                node, _ = result
-                return node
+
+            if not self._manager._accounts:
+                await self._manager.load_accounts(refresh_space=False)
+
+            for account in self._manager.active_accounts:
+                try:
+                    client = await self._manager._get_or_create_client(account)
+                    node = await _client_get(client, path)
+                    if node is not None:
+                        return node
+                except Exception as account_error:
+                    logger.debug(
+                        "Error getting path %s in account %s: %s",
+                        path,
+                        account.name,
+                        account_error,
+                    )
             return None
         except Exception as e:
             logger.debug(f"Error getting node for {path}: {e}")
@@ -489,8 +722,36 @@ class ManagedStorageService:
             True if exists in any account, False otherwise
         """
         try:
-            result = await self._manager.find_by_mega_id(mega_id)
-            return result is not None
+            if not self._manager._accounts:
+                await self._manager.load_accounts(refresh_space=False)
+
+            def _search_nodes(node) -> bool:
+                if not node:
+                    return False
+                attrs = getattr(node, "attributes", None)
+                if attrs and hasattr(attrs, "mega_id") and attrs.mega_id == mega_id:
+                    return True
+                if getattr(node, "is_folder", False):
+                    for child in getattr(node, "children", []):
+                        if _search_nodes(child):
+                            return True
+                return False
+
+            for account in self._manager.active_accounts:
+                try:
+                    client = await self._manager._get_or_create_client(account)
+                    await _client_load_nodes(client)
+                    root = await _client_get_root(client)
+                    if _search_nodes(root):
+                        return True
+                except Exception as account_error:
+                    logger.debug(
+                        "Error searching mega_id %s in account %s: %s",
+                        mega_id,
+                        account.name,
+                        account_error,
+                    )
+            return False
         except Exception as e:
             logger.debug(f"Error searching for mega_id {mega_id}: {e}")
             return False
@@ -522,7 +783,7 @@ class ManagedStorageService:
             account_name: Account name for cache (required for multi-account)
         """
         if not path:
-            root = await client.get_root()
+            root = await _client_get_root(client)
             return root.handle if root else None
         
         # Normalize path
@@ -542,7 +803,7 @@ class ManagedStorageService:
             return account_cache[path]
         
         # Check if exists in MEGA
-        node = await client.get(f"/{path}")
+        node = await _client_get(client, f"/{path}")
         if node:
             account_cache[path] = node.handle
             return node.handle
@@ -560,17 +821,17 @@ class ManagedStorageService:
                 current_handle = account_cache[current_path]
                 continue
             
-            node = await client.get(f"/{current_path}")
+            node = await _client_get(client, f"/{current_path}")
             
             if node:
                 current_handle = node.handle
             else:
                 # Create folder
                 if current_handle is None:
-                    root = await client.get_root()
+                    root = await _client_get_root(client)
                     current_handle = root.handle
                 
-                new_folder = await client.create_folder(part, current_handle)
+                new_folder = await _client_create_folder(client, part, current_handle)
                 current_handle = new_folder.handle
             
             # Cache intermediate path
@@ -619,7 +880,8 @@ class ManagedStorageService:
                 logger.error(f"Failed to get/create folder: {dest or 'root'}")
                 return None
             logger.debug(f"Starting upload to handle={folder_handle}, filename={filename}")
-            node = await client.upload(
+            node = await _client_upload(
+                client,
                 path,
                 dest_folder=folder_handle,
                 name=filename
@@ -664,15 +926,15 @@ class ManagedStorageService:
         
         try:
             # Try to get existing folder
-            folder = await client.get("/.previews")
+            folder = await _client_get(client, "/.previews")
             
             if folder:
                 handle = folder.handle
             else:
                 # Create folder in root
-                root = await client.get_root()
+                root = await _client_get_root(client)
                 if root:
-                    folder = await client.create_folder(".previews", root.handle)
+                    folder = await _client_create_folder(client, ".previews", root.handle)
                     handle = folder.handle
                     print(f"Created /.previews folder in account {account_name}")
                 else:

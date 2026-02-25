@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [0.2.2] - 2026-02-25
+
+### Fixed
+- Adapted managed account refresh/session handling to the new `MegaClient` namespace API (`client.account.*`) to avoid legacy `client.start()`/`client.get_account_info()` failures.
+- Updated managed storage path and lookup operations to use namespace-aware APIs (`client.tree.*`, `client.files.*`) with safe legacy fallback behavior.
+- Fixed account-space refresh errors caused by invoking removed top-level methods on newer `megapy` versions.
+
+### Changed
+- Bumped project version from `0.2.1` to `0.2.2`.
+
 ## [0.2.1] - 2026-02-25
 
 ### Fixed
