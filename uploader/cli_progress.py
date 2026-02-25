@@ -261,6 +261,17 @@ class FolderUploadProgressDisplay:
                 expand=False,
                 console=console,
             )
+            self._file_progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[bold green]{task.fields[label]}", justify="left"),
+                BarColumn(bar_width=42),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                DownloadColumn(),
+                TransferSpeedColumn(),
+                TimeRemainingColumn(),
+                expand=False,
+                console=console,
+            )
 
     def _emit_timeline(
         self,
@@ -287,17 +298,6 @@ class FolderUploadProgressDisplay:
             )
             return
         _echo(f"{stamp} {status:<4} {kind}: {name}{size_label}{error_label}")
-            self._file_progress = Progress(
-                SpinnerColumn(),
-                TextColumn("[bold green]{task.fields[label]}", justify="left"),
-                BarColumn(bar_width=42),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                DownloadColumn(),
-                TransferSpeedColumn(),
-                TimeRemainingColumn(),
-                expand=False,
-                console=console,
-            )
 
     def _start_live(self) -> None:
         if self._meta_progress is None or self._live is not None:
