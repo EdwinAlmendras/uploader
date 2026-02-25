@@ -2,9 +2,13 @@ from pathlib import Path
 from typing import Optional, Callable, Tuple, Set, Dict, Any
 from dataclasses import dataclass
 from uploader.services import StorageService
-from uploader.services.managed_storage import ManagedStorageService
 from uploader.services.repository import MetadataRepository
 from uploader.services.resume import blake3_file
+from uploader.use_cases.deduplication import (
+    ResolveDedupActionUseCase,
+    exists_in_mega_by_source_id,
+    parse_repository_doc_info,
+)
 from uploader.orchestrator.preview_handler import PreviewHandler
 from uploader.services.analyzer import AnalyzerService
 from mediakit import is_video
@@ -112,8 +116,7 @@ class Blake3Deduplicator:
     def __init__(self, repository: MetadataRepository, storage: StorageService):
         self._repository = repository
         self._storage = storage
-        # Get AccountManager if storage is ManagedStorageService
-        self._manager = storage.manager if isinstance(storage, ManagedStorageService) else None
+        self._resolve_action = ResolveDedupActionUseCase()
 
     async def check(self, file_paths: list[Path], progress_callback: Optional[Callable] = None) -> Tuple[Set[Path], Dict[Path, str]]:
         """
@@ -198,24 +201,13 @@ class Blake3Deduplicator:
                 continue
             
             # Handle both old format (just source_id string) and new format (dict with source_id and mega_handle)
-            if isinstance(doc_info, dict):
-                source_id = doc_info.get("source_id")
-                mega_handle = doc_info.get("mega_handle")
-            else:
-                # Backward compatibility: old format was just source_id string
-                source_id = doc_info
-                mega_handle = None
+            source_id, _mega_handle = parse_repository_doc_info(doc_info)
             
             # Verify file exists in MEGA by searching for mega_id (attribute 'm')
             # Use AccountManager if available (searches all accounts), otherwise use storage (single account)
             file_exists_in_mega = False
             if source_id:
-                # Use manager to search in all accounts if available
-                if self._manager:
-                    file_exists_in_mega = await self._manager.find_by_mega_id(source_id) is not None
-                else:
-                    # Fallback to storage (single account)
-                    file_exists_in_mega = await self._storage.exists_by_mega_id(source_id)
+                file_exists_in_mega = await exists_in_mega_by_source_id(self._storage, source_id)
                 
                 if not file_exists_in_mega:
                     logger.info(
@@ -233,8 +225,10 @@ class Blake3Deduplicator:
                     blake3_hash[:16]
                 )
             
+            decision = self._resolve_action.execute(exists_in_db=True, exists_in_mega=file_exists_in_mega)
+
             # Only skip if file exists in both database AND MEGA
-            if file_exists_in_mega:
+            if decision.action == "skip":
                 paths_with_hash = hash_to_paths[blake3_hash]
                 existing_paths.update(paths_with_hash)
                 # Map all paths with this hash to the same source_id

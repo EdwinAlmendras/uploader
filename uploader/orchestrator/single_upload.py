@@ -1,286 +1,145 @@
 """Single file upload handlers."""
-import asyncio
 from pathlib import Path
-from typing import Optional
-from mediakit.analyzer import generate_id
+from typing import Any, Dict, Optional
+
 from ..models import UploadResult, SocialInfo, TelegramInfo
+from ..use_cases.single_upload import DetectMediaKindUseCase, SingleFileUploadUseCase
 from .preview_handler import PreviewHandler
 
 
 class SingleUploadHandler:
     """Handles single file uploads (video, photo, social, telegram)."""
-    
+
     def __init__(
         self,
         analyzer,
         repository,
         storage,
         preview_handler: PreviewHandler,
-        config
+        config,
     ):
-        """
-        Initialize single upload handler.
-        
-        Args:
-            analyzer: AnalyzerService
-            repository: MetadataRepository
-            storage: Storage service
-            preview_handler: PreviewHandler
-            config: UploadConfig
-        """
         self._analyzer = analyzer
         self._repository = repository
         self._storage = storage
         self._preview_handler = preview_handler
         self._config = config
-    
+        self._single_upload = SingleFileUploadUseCase()
+        self._detect_media_kind = DetectMediaKindUseCase()
+
     async def upload(
         self,
         path: Path,
         dest: Optional[str] = None,
-        progress_callback=None
+        progress_callback=None,
     ) -> UploadResult:
         """Upload video with metadata."""
-        path = Path(path)
-        
-        try:
-            # 1. Generate source_id quickly (doesn't require analysis)
-            source_id = generate_id()
-            
-            # 2. Start analysis and upload in parallel
-            analyze_task = asyncio.create_task(self._analyzer.analyze_async(path))
-            upload_task = asyncio.create_task(
-                self._storage.upload_video(path, dest, source_id, progress_callback)
-            )
-            
-            # 3. Wait for both to complete
-            tech_data, mega_handle = await asyncio.gather(analyze_task, upload_task)
-            
-            # Replace source_id from analysis with our pre-generated one
-            tech_data["source_id"] = source_id
-            duration = tech_data.get("duration", 0)
-            
-            if not mega_handle:
-                return UploadResult.fail(path.name, "Upload to MEGA failed")
-            
-            # 4. Save metadata only if upload was successful
-            await self._repository.save_document(tech_data)
-            await self._repository.save_video_metadata(source_id, tech_data)
-            
-            # 5. Generate and upload preview
-            preview_handle = None
-            if self._config.generate_preview:
-                # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
-                preview_filename = path.stem + ".jpg"
-                # Normalize dest_path: use empty string for root instead of None
-                preview_dest = dest if dest is not None else ""
-                preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration, dest_path=preview_dest, filename=preview_filename
-                )
-            
-            return UploadResult.ok(
-                source_id=source_id,
-                filename=path.name,
-                mega_handle=mega_handle,
-                preview_handle=preview_handle
-            )
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return UploadResult.fail(path.name, str(e))
-    
+        return await self._single_upload.execute(
+            analyzer=self._analyzer,
+            repository=self._repository,
+            storage=self._storage,
+            preview_handler=self._preview_handler,
+            config=self._config,
+            path=Path(path),
+            media_kind="video",
+            dest=dest,
+            progress_callback=progress_callback,
+            enable_preview=True,
+        )
+
     async def upload_social(
         self,
         path: Path,
         social_info: SocialInfo,
         dest: Optional[str] = None,
-        progress_callback=None
+        progress_callback=None,
     ) -> UploadResult:
         """Upload social video with channel metadata."""
-        path = Path(path)
-        
-        try:
-            # 1. Generate source_id quickly (doesn't require analysis)
-            source_id = generate_id()
-            
-            # 2. Start analysis and upload in parallel
-            analyze_task = asyncio.create_task(self._analyzer.analyze_async(path))
-            upload_task = asyncio.create_task(
-                self._storage.upload_video(path, dest, source_id, progress_callback)
-            )
-            
-            # 3. Wait for both to complete
-            tech_data, mega_handle = await asyncio.gather(analyze_task, upload_task)
-            
-            # Replace source_id from analysis with our pre-generated one
-            tech_data["source_id"] = source_id
-            duration = tech_data.get("duration", 0)
-            
-            if not mega_handle:
-                return UploadResult.fail(path.name, "Upload to MEGA failed")
-            
-            # 4. Save metadata only if upload was successful
-            await self._repository.save_document(tech_data)
-            await self._repository.save_video_metadata(source_id, tech_data)
+
+        async def persist_social(source_id: str, _tech_data: Dict[str, Any]) -> None:
             await self._repository.save_social_info(source_id, social_info)
-            
-            # 5. Generate and upload preview
-            preview_handle = None
-            if self._config.generate_preview:
-                # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
-                preview_filename = path.stem + ".jpg"
-                # Normalize dest_path: use empty string for root instead of None
-                preview_dest = dest if dest is not None else ""
-                preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration, dest_path=preview_dest, filename=preview_filename
-                )
-            
-            return UploadResult.ok(
-                source_id=source_id,
-                filename=path.name,
-                mega_handle=mega_handle,
-                preview_handle=preview_handle
-            )
-            
-        except Exception as e:
-            return UploadResult.fail(path.name, str(e))
-    
+
+        return await self._single_upload.execute(
+            analyzer=self._analyzer,
+            repository=self._repository,
+            storage=self._storage,
+            preview_handler=self._preview_handler,
+            config=self._config,
+            path=Path(path),
+            media_kind="video",
+            dest=dest,
+            progress_callback=progress_callback,
+            enable_preview=True,
+            extra_persist=persist_social,
+        )
+
     async def upload_photo(
         self,
         path: Path,
         dest: Optional[str] = None,
-        progress_callback=None
+        progress_callback=None,
     ) -> UploadResult:
         """Upload photo with metadata."""
-        path = Path(path)
-        
-        try:
-            # 1. Generate source_id quickly (doesn't require analysis)
-            source_id = generate_id()
-            
-            # 2. Start analysis and upload in parallel
-            analyze_task = asyncio.create_task(self._analyzer.analyze_photo_async(path))
-            upload_task = asyncio.create_task(
-                self._storage.upload_video(path, dest, source_id, progress_callback)
-            )
-            
-            # 3. Wait for both to complete
-            photo_data, mega_handle = await asyncio.gather(analyze_task, upload_task)
-            
-            # Replace source_id from analysis with our pre-generated one
-            photo_data["source_id"] = source_id
-            
-            if not mega_handle:
-                return UploadResult.fail(path.name, "Upload to MEGA failed")
-            
-            # 4. Save metadata only if upload was successful
-            await self._repository.save_document(photo_data)
-            await self._repository.save_photo_metadata(source_id, photo_data)
-            
-            return UploadResult.ok(
-                source_id=source_id,
-                filename=path.name,
-                mega_handle=mega_handle,
-                preview_handle=None
-            )
-            
-        except Exception as e:
-            return UploadResult.fail(path.name, str(e))
-    
+        return await self._single_upload.execute(
+            analyzer=self._analyzer,
+            repository=self._repository,
+            storage=self._storage,
+            preview_handler=self._preview_handler,
+            config=self._config,
+            path=Path(path),
+            media_kind="photo",
+            dest=dest,
+            progress_callback=progress_callback,
+            enable_preview=False,
+        )
+
     async def upload_auto(
         self,
         path: Path,
         dest: Optional[str] = None,
-        progress_callback=None
+        progress_callback=None,
     ) -> UploadResult:
         """Auto-detect type and upload."""
-        from mediakit import is_video, is_image
-        
-        if is_video(path):
-            return await self.upload(path, dest, progress_callback)
-        elif is_image(path):
-            return await self.upload_photo(path, dest, progress_callback)
-        else:
-            return UploadResult.fail(path.name, f"Unsupported file type: {path.suffix}")
-    
+        file_path = Path(path)
+        media_kind = self._detect_media_kind.execute(file_path)
+
+        if media_kind == "video":
+            return await self.upload(file_path, dest, progress_callback)
+        if media_kind == "photo":
+            return await self.upload_photo(file_path, dest, progress_callback)
+        return UploadResult.fail(file_path.name, f"Unsupported file type: {file_path.suffix}")
+
     async def upload_telegram(
         self,
         path: Path,
         telegram_info: Optional[TelegramInfo] = None,
         dest: Optional[str] = None,
-        progress_callback=None
+        progress_callback=None,
     ) -> UploadResult:
         """Upload media with optional Telegram metadata."""
-        path = Path(path)
-        
-        try:
-            from mediakit import is_video, is_image
-            
-            # 1. Detect type
-            is_vid = is_video(path)
-            is_img = is_image(path)
-            
-            if not is_vid and not is_img:
-                return UploadResult.fail(path.name, f"Unsupported file type: {path.suffix}")
-            
-            # 2. Generate source_id quickly (doesn't require analysis)
-            source_id = generate_id()
-            
-            # 3. Start analysis and upload in parallel
-            if is_vid:
-                analyze_task = asyncio.create_task(self._analyzer.analyze_async(path))
-            else:
-                analyze_task = asyncio.create_task(self._analyzer.analyze_photo_async(path))
-            
-            upload_task = asyncio.create_task(
-                self._storage.upload_video(path, dest, source_id, progress_callback)
-            )
-            
-            # 4. Wait for both to complete
-            tech_data, mega_handle = await asyncio.gather(analyze_task, upload_task)
-            
-            # Replace source_id from analysis with our pre-generated one
-            tech_data["source_id"] = source_id
-            duration = tech_data.get("duration", 0) if is_vid else 0
-            
-            if not mega_handle:
-                return UploadResult.fail(path.name, "Upload to MEGA failed")
-            
-            # 5. Save metadata only if upload was successful
-            await self._repository.save_document(tech_data)
-            
-            if is_vid:
-                await self._repository.save_video_metadata(source_id, tech_data)
-            else:
-                await self._repository.save_photo_metadata(source_id, tech_data)
-            
-            # Save Telegram metadata if provided
-            if telegram_info:
+        file_path = Path(path)
+        media_kind = self._detect_media_kind.execute(file_path)
+        if media_kind is None:
+            return UploadResult.fail(file_path.name, f"Unsupported file type: {file_path.suffix}")
+
+        extra_persist = None
+        if telegram_info:
+
+            async def persist_telegram(source_id: str, _tech_data: Dict[str, Any]) -> None:
                 await self._repository.save_telegram(source_id, telegram_info)
-            
-            # 6. Generate and upload preview for videos
-            # Wait for preview to complete before returning to ensure file is not deleted
-            preview_handle = None
-            if is_vid and self._config.generate_preview:
-                # Use video filename for preview (VIDEO.mp4 -> VIDEO.jpg)
-                preview_filename = path.stem + ".jpg"
-                # Normalize dest_path: use empty string for root instead of None
-                preview_dest = dest if dest is not None else ""
-                # Generate preview synchronously to ensure file exists
-                preview_handle = await self._preview_handler.upload_preview(
-                    path, source_id, duration, dest_path=preview_dest, filename=preview_filename
-                )
-            
-            return UploadResult.ok(
-                source_id=source_id,
-                filename=path.name,
-                mega_handle=mega_handle,
-                preview_handle=preview_handle
-            )
-            
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return UploadResult.fail(path.name, str(e))
+
+            extra_persist = persist_telegram
+
+        return await self._single_upload.execute(
+            analyzer=self._analyzer,
+            repository=self._repository,
+            storage=self._storage,
+            preview_handler=self._preview_handler,
+            config=self._config,
+            path=file_path,
+            media_kind=media_kind,
+            dest=dest,
+            progress_callback=progress_callback,
+            enable_preview=media_kind == "video",
+            extra_persist=extra_persist,
+        )
 

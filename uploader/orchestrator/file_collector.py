@@ -2,7 +2,7 @@
 from pathlib import Path
 from typing import List, Tuple
 from mediakit import is_video, is_image
-from .folder.set_detector import SetDetector, is_supported_file
+from .folder.set_detector import SetDetector
 
 
 class FileCollector:
@@ -23,7 +23,7 @@ class FileCollector:
         """
         files = []
         for item in folder.rglob("*"):
-            if item.is_file() and is_supported_file(item):
+            if item.is_file() and (is_video(item) or is_image(item)):
                 files.append(item)
         return sorted(files)
     

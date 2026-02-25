@@ -3,15 +3,19 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "uploader"
-version = "0.1.0"
-description = "Centralized upload orchestration for media files"
+name = "mega-media-uploader"
+version = "0.2.0"
+description = "Centralized MEGA media upload orchestration for files and folders"
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.25.0",
     "blake3>=0.3.0",
+    "rich>=13.0.0",
     "mediakit @ git+https://github.com/EdwinAlmendras/mediakit.git",
 ]
+
+[project.scripts]
+mega-up = "uploader.cli:main"
 
 [project.optional-dependencies]
 managed = [

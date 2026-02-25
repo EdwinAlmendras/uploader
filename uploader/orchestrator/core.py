@@ -4,9 +4,9 @@ from typing import Optional, TYPE_CHECKING
 from uploader.utils.events import EventEmitter, FileProgress
 from ..models import UploadResult, UploadConfig, SocialInfo, TelegramInfo
 from ..protocols import IStorageClient
-from ..services.repository import HTTPAPIClient
+from ..services.api_client import HTTPAPIClient
 from ..services.analyzer import AnalyzerService
-from ..services.repository import MetadataRepository
+from ..services.metadata_gateway import MetadataRepository
 from ..services.preview import PreviewService
 from ..services.storage import StorageService
 from .folder.handler import FolderUploadHandler

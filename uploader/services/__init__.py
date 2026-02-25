@@ -1,7 +1,7 @@
 
 """Services for uploader module."""
 from .analyzer import AnalyzerService
-from .repository import MetadataRepository
+from .metadata_gateway import MetadataRepository
 from .preview import PreviewService
 from .storage import StorageService
 from .hash_cache import HashCache, get_hash_cache

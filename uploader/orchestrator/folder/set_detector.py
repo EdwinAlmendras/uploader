@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import List, Tuple, Set
 import shutil
 import logging
+import os
 from mediakit import is_video, is_image
 
 logger = logging.getLogger(__name__)
 
 # Supported file extensions for individual files (in addition to videos and images)
 SUPPORTED_EXTENSIONS = {'.pdf', '.html', '.htm', '.xls', '.xlsx', '.doc', '.docx', '.txt', '.srt'}
+DEFAULT_MIN_SET_IMAGES = 1
 
 def is_supported_file(path: Path) -> bool:
     """Check if file is a supported type (video, image, or other supported document)."""
@@ -25,7 +27,20 @@ class SetDetector:
     """Detects and prepares image sets for processing."""
     
     def __init__(self):
-        pass
+        self._min_set_images = self._resolve_min_set_images()
+
+    @staticmethod
+    def _resolve_min_set_images() -> int:
+        raw_value = os.getenv("UPLOADER_MIN_SET_IMAGES", str(DEFAULT_MIN_SET_IMAGES))
+        try:
+            return max(1, int(raw_value))
+        except ValueError:
+            logger.warning(
+                "Invalid UPLOADER_MIN_SET_IMAGES=%r. Using default=%d.",
+                raw_value,
+                DEFAULT_MIN_SET_IMAGES,
+            )
+            return DEFAULT_MIN_SET_IMAGES
     
     def detect_sets(
         self, 
@@ -97,7 +112,7 @@ class SetDetector:
                     logger.debug(f"Folder {folder.name} has video: {item.name}")
         
         # Valid set: has images, no videos, no subfolders
-        if count_images < 5:
+        if count_images < self._min_set_images:
             return False
         
         if has_images and not has_videos and not has_subfolders:

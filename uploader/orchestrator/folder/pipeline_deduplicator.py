@@ -18,7 +18,12 @@ from dataclasses import dataclass
 from uploader.services.repository import MetadataRepository
 from uploader.services.storage import StorageService
 from uploader.services.managed_storage import ManagedStorageService
-from uploader.services.resume import blake3_file
+from uploader.use_cases.deduplication import (
+    ResolveDedupActionUseCase,
+    ResolveFileHashUseCase,
+    exists_in_mega_by_source_id,
+    parse_repository_doc_info,
+)
 
 # Import for video detection
 try:
@@ -84,6 +89,8 @@ class PipelineDeduplicator:
         self._hash_cache = hash_cache
         self._preview_handler = preview_handler
         self._analyzer = analyzer
+        self._resolve_hash = ResolveFileHashUseCase()
+        self._resolve_action = ResolveDedupActionUseCase()
         
         # Queues for pipeline
         self._hash_queue: asyncio.Queue[Optional[Tuple[Path, Path]]] = asyncio.Queue()
@@ -201,30 +208,13 @@ class PipelineDeduplicator:
                 except Exception as e:
                     logger.debug("Error in hash_start callback: %s", e)
             
-            # Check cache first if available
-            from_cache = False
-            blake3_hash = None
-            
-            if self._hash_cache:
-                cached_hash = await self._hash_cache.get(file_path)
-                if cached_hash:
-                    blake3_hash = cached_hash
-                    from_cache = True
-                    logger.debug("Hash from cache for '%s': %s...", file_path.name, blake3_hash[:16])
-            
-            # Calculate hash if not in cache
-            if not blake3_hash:
-                try:
-                    blake3_hash = await blake3_file(file_path)
-                    logger.debug("Calculated hash for '%s': %s...", file_path.name, blake3_hash[:16])
-                    
-                    # Save to cache if available
-                    if self._hash_cache:
-                        await self._hash_cache.set(file_path, blake3_hash)
-                        
-                except Exception as e:
-                    logger.error("Hash failed for '%s': %s", file_path.name, e)
-                    blake3_hash = None
+            blake3_hash, from_cache = await self._resolve_hash.execute(
+                file_path, self._hash_cache
+            )
+            if blake3_hash and from_cache:
+                logger.debug("Hash from cache for '%s': %s...", file_path.name, blake3_hash[:16])
+            elif blake3_hash:
+                logger.debug("Calculated hash for '%s': %s...", file_path.name, blake3_hash[:16])
             
             # Update progress
             progress_state["hashed"] += 1
@@ -362,11 +352,7 @@ class PipelineDeduplicator:
             exists_in_db = True
             
             # Handle both old and new format
-            if isinstance(doc_info, dict):
-                source_id = doc_info.get("source_id")
-                mega_handle = doc_info.get("mega_handle")
-            else:
-                source_id = doc_info
+            source_id, mega_handle = parse_repository_doc_info(doc_info)
             
             logger.debug("'%s' exists in DB (source_id: %s)", result.file_path.name, source_id)
         
@@ -374,10 +360,7 @@ class PipelineDeduplicator:
         exists_in_mega = False
         if exists_in_db and source_id:
             try:
-                if self._manager:
-                    exists_in_mega = await self._manager.find_by_mega_id(source_id) is not None
-                else:
-                    exists_in_mega = await self._storage.exists_by_mega_id(source_id)
+                exists_in_mega = await exists_in_mega_by_source_id(self._storage, source_id)
             except Exception as e:
                 logger.warning("MEGA check failed for '%s': %s", result.file_path.name, e)
         
@@ -392,7 +375,8 @@ class PipelineDeduplicator:
                 logger.debug("Error in check_complete callback: %s", e)
         
         # Decide if file should be uploaded
-        if exists_in_db and exists_in_mega:
+        decision = self._resolve_action.execute(exists_in_db, exists_in_mega)
+        if decision.action == "skip":
             # Skip - exists in both
             self._skipped_paths.add(result.file_path)
             self._path_to_source_id[result.file_path] = source_id
@@ -402,7 +386,7 @@ class PipelineDeduplicator:
             if is_video(result.file_path) and self._preview_handler and self._analyzer:
                 await self._check_and_regenerate_preview(result.file_path, source_id)
             
-        elif exists_in_db and not exists_in_mega:
+        elif decision.action == "reupload":
             # Exists in DB but not MEGA - re-upload
             self._pending_files.append((result.file_path, result.rel_path))
             logger.debug("'%s' in DB but not MEGA - WILL RE-UPLOAD", result.file_path.name)
@@ -446,7 +430,6 @@ class PipelineDeduplicator:
             # Construct preview path by changing extension to .jpg
             preview_path = video_path.rsplit('.', 1)[0] + '.jpg'
             logger.debug(f"Preview path: {preview_path}")
-            print(f"Preview path: {preview_path} , video_path: {video_path}")
             preview_exists = await self._manager.exists(preview_path)
             if preview_exists:
                 logger.debug("Preview exists for '%s'", file_path.name)

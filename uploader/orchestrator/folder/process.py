@@ -328,8 +328,8 @@ class FolderUploadProcess:
                         if completed is not None:
                             if "Uploaded:" in message or "Completed:" in message:
                                 self._stats["uploaded"] = completed
-                        elif "Failed:" in message:
-                            self._stats["failed"] = completed
+                            if "Failed:" in message:
+                                self._stats["failed"] = completed
                     
                     await self._events.emit("progress", self.stats)
                 
