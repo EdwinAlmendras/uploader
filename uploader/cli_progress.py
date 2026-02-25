@@ -76,6 +76,18 @@ def _extract_uploaded_total(progress_obj: Any) -> tuple[int, int]:
     return 0, 0
 
 
+def _human_size(value: int) -> str:
+    size = float(max(value, 0))
+    units = ["B", "KB", "MB", "GB", "TB"]
+    unit_idx = 0
+    while size >= 1024.0 and unit_idx < len(units) - 1:
+        size /= 1024.0
+        unit_idx += 1
+    if unit_idx == 0:
+        return f"{int(size)} {units[unit_idx]}"
+    return f"{size:.2f} {units[unit_idx]}"
+
+
 def render_configuration_summary(config: Dict[str, Any]) -> None:
     """Render startup configuration summary."""
     if RICH_AVAILABLE and Panel and Table and console:
@@ -179,7 +191,7 @@ class SingleFileUploadProgress:
             or now - self._last_print_time >= 2.0
         )
         if should_print and percent != self._last_printed_percent:
-            _echo(f"  {percent:3d}% ({uploaded}/{total} bytes)")
+            _echo(f"  {percent:3d}% ({_human_size(uploaded)}/{_human_size(total)})")
             self._last_printed_percent = percent
             self._last_print_time = now
 
@@ -370,7 +382,9 @@ class FolderUploadProgressDisplay:
         percent = int((uploaded / total) * 100)
         prev = self._file_percent_cache.get(name, -1)
         if percent >= 100 or percent - prev >= FOLDER_FILE_PERCENT_STEP:
-            _echo(f"  {name}: {percent:3d}% ({uploaded}/{total} bytes)")
+            _echo(
+                f"  {name}: {percent:3d}% ({_human_size(uploaded)}/{_human_size(total)})"
+            )
             self._file_percent_cache[name] = percent
 
     def on_file_complete(self, result: Any) -> None:

@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [0.2.6] - 2026-02-25
+
+### Added
+- Added per-run detached log files by default (`run` and `error`) even when console logging mode is `silent`.
+- Added log file paths to the startup configuration summary.
+
+### Changed
+- Improved folder/file failure reporting to print `ERROR Cause:` and failed item counts on CLI failures.
+- Improved fallback progress text units from raw bytes to human-readable units (KB/MB/GB).
+- Bumped project version from `0.2.5` to `0.2.6`.
+
 ## [0.2.5] - 2026-02-25
 
 ### Fixed

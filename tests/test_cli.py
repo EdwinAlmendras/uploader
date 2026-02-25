@@ -3,7 +3,13 @@ import logging
 import os
 from pathlib import Path
 
-from uploader.cli import _build_managed_storage, _load_env_file, _normalize_dest, _setup_logging
+from uploader.cli import (
+    _build_managed_storage,
+    _get_log_paths,
+    _load_env_file,
+    _normalize_dest,
+    _setup_logging,
+)
 
 
 def test_normalize_dest():
@@ -59,15 +65,23 @@ def test_build_managed_storage_uses_available_kwargs():
     assert storage.collection_name == "my_collection"
 
 
-def test_setup_logging_defaults_to_silent():
+def test_setup_logging_defaults_to_silent(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEGA_UP_LOG_DIR", str(tmp_path))
     mode = _setup_logging(debug=False, silent=False, log_level=None)
+    run_log, error_log = _get_log_paths()
     assert mode == "silent"
-    assert logging.getLogger().isEnabledFor(logging.CRITICAL) is False
+    assert run_log and Path(run_log).exists()
+    assert error_log and Path(error_log).exists()
+    assert logging.getLogger().isEnabledFor(logging.CRITICAL) is True
     logging.disable(logging.NOTSET)
 
 
-def test_setup_logging_debug_mode():
+def test_setup_logging_debug_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEGA_UP_LOG_DIR", str(tmp_path))
     mode = _setup_logging(debug=True, silent=False, log_level=None)
+    run_log, error_log = _get_log_paths()
     assert mode == "DEBUG"
+    assert run_log and Path(run_log).exists()
+    assert error_log and Path(error_log).exists()
     assert logging.getLogger().isEnabledFor(logging.DEBUG) is True
     logging.disable(logging.NOTSET)

@@ -7,8 +7,9 @@ import inspect
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence, Tuple
 
 from .cli_progress import (
     FolderUploadProgressDisplay,
@@ -18,10 +19,34 @@ from .cli_progress import (
 
 
 DEFAULT_MEGA_ACCOUNT_API_URL = "http://127.0.0.1:9932"
+DEFAULT_LOG_DIR = Path.home() / ".cache" / "mega-up" / "logs"
+_LAST_RUN_LOG_PATH: Optional[Path] = None
+_LAST_ERROR_LOG_PATH: Optional[Path] = None
 
 
 class CLIError(RuntimeError):
     """Raised when CLI validation/execution fails."""
+
+
+def _resolve_log_directory() -> Path:
+    custom = os.getenv("MEGA_UP_LOG_DIR")
+    if custom:
+        return Path(custom).expanduser()
+    return DEFAULT_LOG_DIR
+
+
+def _get_log_paths() -> Tuple[Optional[str], Optional[str]]:
+    run_log = str(_LAST_RUN_LOG_PATH) if _LAST_RUN_LOG_PATH else None
+    error_log = str(_LAST_ERROR_LOG_PATH) if _LAST_ERROR_LOG_PATH else None
+    return run_log, error_log
+
+
+def _print_log_hint(stream=sys.stderr) -> None:
+    run_log, error_log = _get_log_paths()
+    if error_log:
+        print(f"ERROR Log File: {error_log}", file=stream)
+    if run_log:
+        print(f"Run Log: {run_log}", file=stream)
 
 
 def _setup_logging(debug: bool, silent: bool, log_level: Optional[str]) -> str:
@@ -31,16 +56,15 @@ def _setup_logging(debug: bool, silent: bool, log_level: Optional[str]) -> str:
     Default behavior is silent unless --debug or --log-level is provided.
     Returns a string describing effective mode.
     """
+    global _LAST_RUN_LOG_PATH, _LAST_ERROR_LOG_PATH
+
     root_logger = logging.getLogger()
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
 
     logging.disable(logging.NOTSET)
-
-    if silent or (not debug and not log_level):
-        logging.disable(logging.CRITICAL)
-        root_logger.setLevel(logging.CRITICAL + 1)
-        return "silent"
+    _LAST_RUN_LOG_PATH = None
+    _LAST_ERROR_LOG_PATH = None
 
     if debug:
         level = logging.DEBUG
@@ -49,6 +73,35 @@ def _setup_logging(debug: bool, silent: bool, log_level: Optional[str]) -> str:
     else:
         env_level = os.getenv("LOG_LEVEL")
         level = getattr(logging, (env_level or "INFO").upper(), logging.INFO)
+
+    enable_console = not silent and (debug or log_level is not None)
+    mode = logging.getLevelName(level) if enable_console else "silent"
+    root_logger.setLevel(level if enable_console else logging.INFO)
+
+    file_formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    try:
+        log_dir = _resolve_log_directory()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        _LAST_RUN_LOG_PATH = log_dir / f"mega-up-{stamp}.log"
+        _LAST_ERROR_LOG_PATH = log_dir / f"mega-up-{stamp}.error.log"
+
+        run_file_handler = logging.FileHandler(_LAST_RUN_LOG_PATH, encoding="utf-8")
+        run_file_handler.setLevel(logging.INFO)
+        run_file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(run_file_handler)
+
+        error_file_handler = logging.FileHandler(_LAST_ERROR_LOG_PATH, encoding="utf-8")
+        error_file_handler.setLevel(logging.ERROR)
+        error_file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(error_file_handler)
+    except Exception as exc:
+        print(f"WARNING: could not initialize log files: {exc}", file=sys.stderr)
+        _LAST_RUN_LOG_PATH = None
+        _LAST_ERROR_LOG_PATH = None
+
+    if not enable_console:
+        return mode
 
     try:
         from rich.logging import RichHandler  # type: ignore
@@ -62,12 +115,12 @@ def _setup_logging(debug: bool, silent: bool, log_level: Optional[str]) -> str:
         formatter = logging.Formatter("%(message)s")
     except Exception:
         handler = logging.StreamHandler()
-        formatter = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        formatter = file_formatter
 
     handler.setFormatter(formatter)
+    handler.setLevel(level)
     root_logger.addHandler(handler)
-    root_logger.setLevel(level)
-    return logging.getLevelName(level)
+    return mode
 
 
 def _normalize_dest(dest: Optional[str]) -> Optional[str]:
@@ -174,6 +227,25 @@ async def _close_storage_safely(storage) -> None:
             pass
 
 
+def _summarize_folder_failure(folder_result: Any) -> Tuple[Optional[str], int]:
+    failed_details = []
+    results = getattr(folder_result, "results", None) or []
+    for item in results:
+        if bool(getattr(item, "success", False)):
+            continue
+        filename = str(getattr(item, "filename", "(unknown file)"))
+        error = str(getattr(item, "error", "unknown error"))
+        failed_details.append(f"{filename}: {error}")
+
+    if failed_details:
+        return failed_details[0], len(failed_details)
+
+    folder_error = getattr(folder_result, "error", None)
+    if folder_error:
+        return str(folder_error), 0
+    return None, 0
+
+
 async def _run_upload(
     source: Path,
     dest: Optional[str],
@@ -238,6 +310,9 @@ async def _run_upload(
                 success = bool(getattr(result, "success", True))
                 error = getattr(result, "error", None)
                 progress.complete(success=success, error=error)
+                if not success and error:
+                    print(f"ERROR Cause: {error}", file=sys.stderr)
+                    _print_log_hint(sys.stderr)
                 return 0 if success else 1
 
             if source.is_dir():
@@ -264,9 +339,14 @@ async def _run_upload(
                 if bool(getattr(folder_result, "success", False)):
                     return 0
 
-                folder_error = getattr(folder_result, "error", None)
-                if folder_error:
-                    print(f"ERROR: {folder_error}", file=sys.stderr)
+                cause, failed_count = _summarize_folder_failure(folder_result)
+                if cause:
+                    print(f"ERROR Cause: {cause}", file=sys.stderr)
+                total_items = getattr(folder_result, "total_files", None)
+                if failed_count:
+                    suffix = f"/{total_items}" if total_items is not None else ""
+                    print(f"ERROR Failed Items: {failed_count}{suffix}", file=sys.stderr)
+                _print_log_hint(sys.stderr)
                 return 1
 
             raise CLIError(f"source is neither file nor directory: {source}")
@@ -355,6 +435,7 @@ def run_cli(argv: Optional[Sequence[str]] = None) -> int:
         silent=args.silent,
         log_level=args.log_level,
     )
+    run_log_path, error_log_path = _get_log_paths()
 
     if args.source is None:
         parser.print_help()
@@ -397,6 +478,8 @@ def run_cli(argv: Optional[Sequence[str]] = None) -> int:
             "Skip Hash Check": "yes" if args.skip_hash_check else "no",
             "Env File": str(used_env_file) if used_env_file else "-",
             "Logging": effective_log_mode,
+            "Run Log": run_log_path or "-",
+            "Error Log": error_log_path or "-",
         }
     )
 
@@ -413,9 +496,11 @@ def run_cli(argv: Optional[Sequence[str]] = None) -> int:
         )
     except CLIError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        _print_log_hint(sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("Cancelled.", file=sys.stderr)
+        _print_log_hint(sys.stderr)
         return 130
 
 
