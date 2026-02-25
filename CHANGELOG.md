@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [0.2.5] - 2026-02-25
+
+### Fixed
+- Fixed folder CLI `Overall` progress denominator being overwritten to `100` by percent-style phase callbacks.
+- Kept `total_files` as the real workload size while preserving callback-level progress fields for live phase display.
+
+### Changed
+- Bumped project version from `0.2.4` to `0.2.5`.
+
 ## [0.2.4] - 2026-02-25
 
 ### Changed

@@ -340,8 +340,6 @@ class FolderUploadProcess:
                 # Schedule async operations without blocking
                 async def update_progress():
                     async with self._stats_lock:
-                        if total is not None and total_value >= 0:
-                            self._stats["total_files"] = total_value
                         self._stats["last_message"] = message
                         self._stats["progress_current"] = completed_value
                         self._stats["progress_total"] = total_value
