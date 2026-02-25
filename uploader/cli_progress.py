@@ -236,6 +236,8 @@ class FolderUploadProgressDisplay:
     def __init__(self):
         self._phase: Optional[_Phase] = None
         self._file_percent_cache: Dict[str, int] = {}
+        self._file_size_bytes: Dict[str, int] = {}
+        self._timeline_seen: set[str] = set()
         self._active_tasks: Dict[str, TaskID] = {}
         self._stats: Dict[str, int] = {
             "total_files": 0,
@@ -259,6 +261,32 @@ class FolderUploadProgressDisplay:
                 expand=False,
                 console=console,
             )
+
+    def _emit_timeline(
+        self,
+        status: str,
+        kind: str,
+        name: str,
+        size_bytes: Optional[int] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        size_label = f" {_human_size(size_bytes)}" if size_bytes and size_bytes > 0 else ""
+        error_label = f" cause={error}" if error else ""
+        if RICH_AVAILABLE:
+            palette = {
+                "DONE": "green",
+                "FAIL": "red",
+                "SYNC": "cyan",
+                "INFO": "blue",
+            }
+            color = palette.get(status, "white")
+            _echo(
+                f"[dim]{stamp}[/dim] [{color}]{status:<4}[/{color}] "
+                f"{kind}: {name}{size_label}{error_label}"
+            )
+            return
+        _echo(f"{stamp} {status:<4} {kind}: {name}{size_label}{error_label}")
             self._file_progress = Progress(
                 SpinnerColumn(),
                 TextColumn("[bold green]{task.fields[label]}", justify="left"),
@@ -351,6 +379,7 @@ class FolderUploadProgressDisplay:
             file_size = Path(file_path).stat().st_size
         except OSError:
             file_size = 0
+        self._file_size_bytes[name] = file_size
 
         if self._file_progress is not None:
             self._start_live()
@@ -390,31 +419,27 @@ class FolderUploadProgressDisplay:
     def on_file_complete(self, result: Any) -> None:
         name = getattr(result, "filename", "file")
         task_id = self._active_tasks.pop(name, None)
+        size_bytes = self._file_size_bytes.pop(name, None)
         if self._file_progress is not None and task_id is not None:
             try:
                 self._file_progress.remove_task(task_id)
             except Exception:
                 pass
 
-        if not RICH_AVAILABLE:
-            _echo(f"Uploaded: {name}")
+        self._emit_timeline("DONE", "file", name, size_bytes=size_bytes)
 
     def on_file_fail(self, result: Any) -> None:
         name = getattr(result, "filename", "file")
         error = getattr(result, "error", None)
         task_id = self._active_tasks.pop(name, None)
+        size_bytes = self._file_size_bytes.pop(name, None)
         if self._file_progress is not None and task_id is not None:
             try:
                 self._file_progress.remove_task(task_id)
             except Exception:
                 pass
 
-        suffix = f" - {error}" if error else ""
-        _echo(
-            f"[red]Failed:[/red] {name}{suffix}"
-            if RICH_AVAILABLE
-            else f"Failed: {name}{suffix}"
-        )
+        self._emit_timeline("FAIL", "file", name, size_bytes=size_bytes, error=error)
 
     def on_phase_start(self, phase_name: str, message: str) -> None:
         self._phase = _Phase(phase_name, message)
@@ -437,6 +462,15 @@ class FolderUploadProgressDisplay:
         except Exception:
             return
         self._update_phase_task(phase_name, message, current, total)
+        if phase_name == "uploading" and message.startswith("Set "):
+            normalized = message.lower()
+            if " done" in normalized or " failed" in normalized:
+                key = f"set::{message}"
+                if key not in self._timeline_seen:
+                    self._timeline_seen.add(key)
+                    set_name = message.split(":", 1)[1].strip() if ":" in message else message
+                    status = "FAIL" if " failed" in normalized else "DONE"
+                    self._emit_timeline(status, "set", set_name)
         if not RICH_AVAILABLE and total > 0:
             percent = int((current / total) * 100) if total else 0
             cache_key = f"phase::{phase_name}"
@@ -478,6 +512,10 @@ class FolderUploadProgressDisplay:
     def on_sync_complete(self, filename: str, success: bool) -> None:
         state = "ok" if success else "failed"
         self._update_phase_task("syncing", f"{state}: {filename}", 1, 1)
+        if success:
+            self._emit_timeline("SYNC", "db", filename)
+        else:
+            self._emit_timeline("FAIL", "sync", filename)
 
     def on_check_complete(self, filename: str, exists_in_db: bool, exists_in_mega: bool) -> None:
         state = "db+mega" if exists_in_db and exists_in_mega else "new"
@@ -485,6 +523,7 @@ class FolderUploadProgressDisplay:
 
     def on_error(self, error: Exception) -> None:
         self._stop_live()
+        self._emit_timeline("FAIL", "process", "folder upload", error=str(error))
         _echo(f"[red]Error:[/red] {error}" if RICH_AVAILABLE else f"Error: {error}")
 
     def on_finish(self, folder_result: Any) -> None:

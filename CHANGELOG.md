@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [0.2.9] - 2026-02-25
+
+### Added
+- Added a live timeline line stream in folder uploads with timestamped events for completed/failed files, completed/failed sets, and DB sync actions.
+
+### Changed
+- Timeline file events now include human-readable sizes (KB/MB/GB) when available.
+- Bumped project version from `0.2.8` to `0.2.9`.
+
 ## [0.2.8] - 2026-02-25
 
 ### Fixed

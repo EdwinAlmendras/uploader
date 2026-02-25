@@ -39,20 +39,18 @@ async def exists_in_mega_by_source_id(storage: Any, source_id: str) -> bool:
     """
     Verify if a source_id exists in MEGA.
 
-    It prefers AccountManager lookup when available (multi-account mode) and
-    falls back to storage.exists_by_mega_id for single-account storage.
+    Namespace-only behavior: requires storage.exists_by_mega_id(source_id).
     """
     if not source_id:
         return False
     try:
-        manager = getattr(storage, "manager", None)
-        if manager and hasattr(manager, "find_by_mega_id"):
-            return await manager.find_by_mega_id(source_id) is not None
-        exists_by_mega_id = getattr(storage, "exists_by_mega_id", None)
-        if callable(exists_by_mega_id):
-            return await exists_by_mega_id(source_id)
-    except Exception as exc:
-        logger.debug("MEGA source verification failed for source_id=%s: %s", source_id, exc)
+        return await storage.exists_by_mega_id(source_id)
+    except Exception as storage_exc:
+        logger.debug(
+            "Storage mega_id lookup failed for source_id=%s: %s",
+            source_id,
+            storage_exc,
+        )
     return False
 
 

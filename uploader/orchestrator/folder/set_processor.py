@@ -21,6 +21,7 @@ from mediakit.preview.image_preview import ImagePreviewGenerator
 from uploader.services import AnalyzerService, MetadataRepository, StorageService
 from uploader.orchestrator.models import UploadResult
 from uploader.models import UploadConfig
+from uploader.use_cases.deduplication import exists_in_mega_by_source_id
 from mediakit.analyzer import generate_id
 from mediakit.image.processor import ImageProcessor
 from typing import Any
@@ -75,12 +76,7 @@ class ImageSetProcessor:
     async def _exists_in_mega(self, source_id: str) -> bool:
         """Check source existence in MEGA across storage implementations."""
         try:
-            manager = getattr(self._storage, "manager", None)
-            if manager and hasattr(manager, "find_by_mega_id"):
-                return await manager.find_by_mega_id(source_id) is not None
-            exists_by_mega_id = getattr(self._storage, "exists_by_mega_id", None)
-            if callable(exists_by_mega_id):
-                return await exists_by_mega_id(source_id)
+            return await exists_in_mega_by_source_id(self._storage, source_id)
         except Exception as exc:
             logger.warning("MEGA check failed for archive source_id=%s: %s", source_id, exc)
         return False
