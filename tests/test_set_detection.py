@@ -307,14 +307,14 @@ class TestImageSetProcessor:
             # Check filename parameter
             filename = kwargs.get('filename', None)
             if filename:
-                if filename == "test_set_cover.jpg":
+                if filename == "test_set.cover.jpg":
                     cover_found = True
                     assert kwargs.get('dest_path') == "/test_dest", "Cover should be uploaded to same dest_path as 7z"
                 elif filename == "test_set.jpg":
                     grid_found = True
                     assert kwargs.get('dest_path') == "/test_dest", "Grid should be uploaded to same dest_path as 7z"
         
-        assert cover_found, "Cover should be uploaded with filename 'test_set_cover.jpg'"
+        assert cover_found, "Cover should be uploaded with filename 'test_set.cover.jpg'"
         assert grid_found, "Grid should be uploaded with filename 'test_set.jpg'"
 
 

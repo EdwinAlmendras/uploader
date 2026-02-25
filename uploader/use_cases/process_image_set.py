@@ -182,7 +182,7 @@ class ProcessImageSetUseCase:
                     logger.debug("Uploading cover image: %s", cover.name)
                     if progress_callback:
                         progress_callback(f"Uploading cover: {cover.name}...", 95, 100)
-                    cover_filename = f"{set_name}_cover.jpg"
+                    cover_filename = f"{set_name}.cover.jpg"
                     temp_cover_dir = Path(tempfile.mkdtemp(prefix="cover_"))
                     temp_cover_path = temp_cover_dir / "cover.jpg"
                     shutil.copy2(cover, temp_cover_path)
