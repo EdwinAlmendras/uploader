@@ -248,7 +248,18 @@ class FolderUploadWorkflow:
         process: Optional["FolderUploadProcess"],
     ) -> None:
         logger.info("Processing %d image set(s)...", len(sets))
+        if process:
+            await process.set_phase(
+                ProcessPhase.CHECKING_MEGA,
+                f"Checking {len(sets)} set(s) in DB/MEGA...",
+            )
         set_check_results = await self._batch_check_sets(sets)
+        if process:
+            await process.complete_phase("checking_mega", f"Checked {len(sets)} set(s)")
+            await process.set_phase(
+                ProcessPhase.UPLOADING,
+                f"Processing {len(sets)} set(s)...",
+            )
 
         for idx, set_folder in enumerate(sets, 1):
             if process and process.is_cancelled:
@@ -261,6 +272,14 @@ class FolderUploadWorkflow:
                     f"Processing set {idx}/{len(sets)}: {set_folder.name}...",
                     idx - 1,
                     total,
+                )
+            if process:
+                await process.emit_phase_progress(
+                    "uploading",
+                    f"Set {idx}/{len(sets)}: {set_folder.name}",
+                    idx - 1,
+                    len(sets),
+                    set_folder.name,
                 )
 
             set_rel_path = set_folder.relative_to(folder_path)
@@ -283,6 +302,14 @@ class FolderUploadWorkflow:
                         None,
                     )
                 )
+                if process:
+                    await process.emit_phase_progress(
+                        "uploading",
+                        f"Set {idx}/{len(sets)} done (already exists): {set_folder.name}",
+                        idx,
+                        len(sets),
+                        set_folder.name,
+                    )
                 continue
 
             try:
@@ -299,9 +326,24 @@ class FolderUploadWorkflow:
                         process._stats["uploaded"] = sum(1 for item in all_results if item.success)
                         process._stats["failed"] = sum(1 for item in all_results if not item.success)
                     await process._events.emit("progress", process.stats)
+                    await process.emit_phase_progress(
+                        "uploading",
+                        f"Set {idx}/{len(sets)} done: {set_folder.name}",
+                        idx,
+                        len(sets),
+                        set_folder.name,
+                    )
             except Exception as exc:
                 logger.error("Error processing set %s: %s", set_folder.name, exc, exc_info=True)
                 all_results.append(UploadResult.fail(set_folder.name, str(exc)))
+                if process:
+                    await process.emit_phase_progress(
+                        "uploading",
+                        f"Set {idx}/{len(sets)} failed: {set_folder.name}",
+                        idx,
+                        len(sets),
+                        set_folder.name,
+                    )
 
     async def _process_individual_files_phase(
         self,

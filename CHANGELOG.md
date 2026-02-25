@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog, and this project follows Semantic Versioning.
 
+## [0.2.3] - 2026-02-25
+
+### Added
+- Added a richer live folder-upload dashboard in `mega-up` with phase and overall progress sections.
+- Added CLI subscriptions for hash/check/sync progress events so current activity is visible during long runs.
+
+### Changed
+- Improved folder upload phase updates to emit detailed progress for set processing and parallel file uploads.
+- Improved process-level callback handling to surface in-phase activity messages (including long analysis/upload steps).
+- Bumped project version from `0.2.2` to `0.2.3`.
+
 ## [0.2.2] - 2026-02-25
 
 ### Fixed

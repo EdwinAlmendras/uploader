@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 import time
 
 try:
-    from rich.console import Console
+    from rich.console import Console, Group
     from rich.live import Live
     from rich.panel import Panel
     from rich.progress import (
@@ -25,6 +25,7 @@ try:
     RICH_AVAILABLE = True
 except Exception:  # pragma: no cover - fallback if rich is unavailable
     Console = None
+    Group = None
     Live = None
     Panel = None
     Progress = None
@@ -224,13 +225,31 @@ class FolderUploadProgressDisplay:
         self._phase: Optional[_Phase] = None
         self._file_percent_cache: Dict[str, int] = {}
         self._active_tasks: Dict[str, TaskID] = {}
-        self._progress = None
+        self._stats: Dict[str, int] = {
+            "total_files": 0,
+            "uploaded": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
+        self._phase_task_id: Optional[TaskID] = None
+        self._overall_task_id: Optional[TaskID] = None
+        self._meta_progress = None
+        self._file_progress = None
         self._live = None
 
         if RICH_AVAILABLE and Progress and Live and console:
-            self._progress = Progress(
+            self._meta_progress = Progress(
                 SpinnerColumn(),
                 TextColumn("[bold cyan]{task.fields[label]}", justify="left"),
+                BarColumn(bar_width=28),
+                TextColumn("{task.completed}/{task.total}"),
+                TextColumn("[dim]{task.fields[detail]}", justify="left"),
+                expand=False,
+                console=console,
+            )
+            self._file_progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[bold green]{task.fields[label]}", justify="left"),
                 BarColumn(bar_width=42),
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                 DownloadColumn(),
@@ -241,21 +260,78 @@ class FolderUploadProgressDisplay:
             )
 
     def _start_live(self) -> None:
-        if self._progress is None or self._live is not None:
+        if self._meta_progress is None or self._live is not None:
             return
+
+        renderable = self._meta_progress
+        if self._file_progress is not None and Group is not None:
+            renderable = Group(self._meta_progress, self._file_progress)
+
         self._live = Live(
-            self._progress,
+            renderable,
             console=console,
-            refresh_per_second=5,
+            refresh_per_second=8,
             vertical_overflow="visible",
         )
         self._live.start()
+        self._phase_task_id = self._meta_progress.add_task(
+            "phase",
+            label="Phase",
+            total=1,
+            completed=0,
+            detail="waiting...",
+        )
+        self._overall_task_id = self._meta_progress.add_task(
+            "overall",
+            label="Overall",
+            total=1,
+            completed=0,
+            detail="uploaded=0 failed=0 skipped=0",
+        )
 
     def _stop_live(self) -> None:
         if self._live is None:
             return
         self._live.stop()
         self._live = None
+
+    def _update_overall_task(self) -> None:
+        if self._meta_progress is None or self._overall_task_id is None:
+            return
+        uploaded = int(self._stats.get("uploaded", 0) or 0)
+        failed = int(self._stats.get("failed", 0) or 0)
+        skipped = int(self._stats.get("skipped", 0) or 0)
+        total_from_stats = int(self._stats.get("total_files", 0) or 0)
+        completed = max(uploaded + failed + skipped, 0)
+        total = max(total_from_stats, completed, 1)
+        self._meta_progress.update(
+            self._overall_task_id,
+            label="Overall",
+            completed=min(completed, total),
+            total=total,
+            detail=f"uploaded={uploaded} failed={failed} skipped={skipped}",
+        )
+
+    def _update_phase_task(
+        self,
+        phase_name: str,
+        message: str,
+        current: int = 0,
+        total: int = 0,
+    ) -> None:
+        self._start_live()
+        if self._meta_progress is None or self._phase_task_id is None:
+            return
+        safe_total = max(total, 1)
+        safe_current = min(max(current, 0), safe_total)
+        detail = (message or "").strip() or "working..."
+        self._meta_progress.update(
+            self._phase_task_id,
+            label=f"Phase {phase_name}",
+            completed=safe_current,
+            total=safe_total,
+            detail=detail[:120],
+        )
 
     def on_file_start(self, file_path: Path) -> None:
         name = Path(file_path).name
@@ -264,9 +340,13 @@ class FolderUploadProgressDisplay:
         except OSError:
             file_size = 0
 
-        if self._progress is not None and file_size > LARGE_FILE_THRESHOLD:
+        if self._file_progress is not None:
             self._start_live()
-            task_id = self._progress.add_task("upload", label=name[:60], total=file_size)
+            task_id = self._file_progress.add_task(
+                "upload",
+                label=name[:60],
+                total=max(file_size, 1),
+            )
             self._active_tasks[name] = task_id
             return
 
@@ -280,9 +360,9 @@ class FolderUploadProgressDisplay:
             return
 
         task_id = self._active_tasks.get(name)
-        if self._progress is not None and task_id is not None:
+        if self._file_progress is not None and task_id is not None:
             try:
-                self._progress.update(task_id, completed=uploaded, total=total)
+                self._file_progress.update(task_id, completed=uploaded, total=total)
             except Exception:
                 pass
             return
@@ -296,27 +376,24 @@ class FolderUploadProgressDisplay:
     def on_file_complete(self, result: Any) -> None:
         name = getattr(result, "filename", "file")
         task_id = self._active_tasks.pop(name, None)
-        if self._progress is not None and task_id is not None:
+        if self._file_progress is not None and task_id is not None:
             try:
-                self._progress.remove_task(task_id)
+                self._file_progress.remove_task(task_id)
             except Exception:
                 pass
-            if not self._active_tasks:
-                self._stop_live()
 
-        _echo(f"[green]Uploaded:[/green] {name}" if RICH_AVAILABLE else f"Uploaded: {name}")
+        if not RICH_AVAILABLE:
+            _echo(f"Uploaded: {name}")
 
     def on_file_fail(self, result: Any) -> None:
         name = getattr(result, "filename", "file")
         error = getattr(result, "error", None)
         task_id = self._active_tasks.pop(name, None)
-        if self._progress is not None and task_id is not None:
+        if self._file_progress is not None and task_id is not None:
             try:
-                self._progress.remove_task(task_id)
+                self._file_progress.remove_task(task_id)
             except Exception:
                 pass
-            if not self._active_tasks:
-                self._stop_live()
 
         suffix = f" - {error}" if error else ""
         _echo(
@@ -327,31 +404,73 @@ class FolderUploadProgressDisplay:
 
     def on_phase_start(self, phase_name: str, message: str) -> None:
         self._phase = _Phase(phase_name, message)
-        _echo(
-            f"[bold blue]Phase:[/bold blue] {phase_name} - {message}"
-            if RICH_AVAILABLE
-            else f"[{phase_name}] {message}"
-        )
+        self._update_phase_task(phase_name, message, 0, 1)
+        if not RICH_AVAILABLE:
+            _echo(f"[{phase_name}] {message}")
 
     def on_phase_progress(self, phase_progress: Any) -> None:
         try:
+            phase_name = getattr(phase_progress, "phase", "phase")
+            message = getattr(phase_progress, "message", "")
+            current = int(getattr(phase_progress, "current", 0) or 0)
+            total = int(getattr(phase_progress, "total", 0) or 0)
             self._phase = _Phase(
-                name=getattr(phase_progress, "phase", "phase"),
-                message=getattr(phase_progress, "message", ""),
-                current=int(getattr(phase_progress, "current", 0) or 0),
-                total=int(getattr(phase_progress, "total", 0) or 0),
+                name=phase_name,
+                message=message,
+                current=current,
+                total=total,
             )
         except Exception:
             return
+        self._update_phase_task(phase_name, message, current, total)
+        if not RICH_AVAILABLE and total > 0:
+            percent = int((current / total) * 100) if total else 0
+            cache_key = f"phase::{phase_name}"
+            prev = self._file_percent_cache.get(cache_key, -1)
+            if percent >= 100 or percent - prev >= FOLDER_FILE_PERCENT_STEP:
+                self._file_percent_cache[cache_key] = percent
+                _echo(f"[{phase_name}] {percent:3d}% - {message}")
 
     def on_phase_complete(self, phase_name: str, message: str) -> None:
-        _echo(
-            f"[dim]Done:[/dim] {phase_name} - {message}"
-            if RICH_AVAILABLE
-            else f"[{phase_name}] done - {message}"
-        )
+        self._update_phase_task(phase_name, f"done: {message}", 1, 1)
+        if not RICH_AVAILABLE:
+            _echo(f"[{phase_name}] done - {message}")
+
+    def on_progress(self, stats: Dict[str, Any]) -> None:
+        if not isinstance(stats, dict):
+            return
+        for key in ("total_files", "uploaded", "failed", "skipped"):
+            if key in stats:
+                try:
+                    self._stats[key] = int(stats.get(key, 0) or 0)
+                except Exception:
+                    pass
+        self._update_overall_task()
+
+    def on_hash_start(self, filename: str) -> None:
+        self._update_phase_task("hashing", f"Hashing: {filename}", 0, 1)
+
+    def on_hash_complete(self, hash_progress: Any) -> None:
+        filename = getattr(hash_progress, "filename", "")
+        current = int(getattr(hash_progress, "current", 0) or 0)
+        total = int(getattr(hash_progress, "total", 0) or 0)
+        from_cache = bool(getattr(hash_progress, "from_cache", False))
+        mode = "cache" if from_cache else "calc"
+        self._update_phase_task("hashing", f"{mode}: {filename}", current, total)
+
+    def on_sync_start(self, filename: str) -> None:
+        self._update_phase_task("syncing", f"Syncing: {filename}", 0, 1)
+
+    def on_sync_complete(self, filename: str, success: bool) -> None:
+        state = "ok" if success else "failed"
+        self._update_phase_task("syncing", f"{state}: {filename}", 1, 1)
+
+    def on_check_complete(self, filename: str, exists_in_db: bool, exists_in_mega: bool) -> None:
+        state = "db+mega" if exists_in_db and exists_in_mega else "new"
+        self._update_phase_task("checking_db", f"{state}: {filename}", 0, 1)
 
     def on_error(self, error: Exception) -> None:
+        self._stop_live()
         _echo(f"[red]Error:[/red] {error}" if RICH_AVAILABLE else f"Error: {error}")
 
     def on_finish(self, folder_result: Any) -> None:
@@ -359,8 +478,9 @@ class FolderUploadProgressDisplay:
         uploaded = getattr(folder_result, "uploaded_files", None)
         total = getattr(folder_result, "total_files", None)
         failed = getattr(folder_result, "failed_files", None)
+        skipped = self._stats.get("skipped", 0)
         _echo(
-            f"[bold]Finished[/bold] uploaded={uploaded} total={total} failed={failed}"
+            f"[bold]Finished[/bold] uploaded={uploaded} total={total} failed={failed} skipped={skipped}"
             if RICH_AVAILABLE
-            else f"Finished: uploaded={uploaded} total={total} failed={failed}"
+            else f"Finished: uploaded={uploaded} total={total} failed={failed} skipped={skipped}"
         )

@@ -6,6 +6,7 @@ from uploader.orchestrator.models import FolderUploadResult, UploadResult
 import asyncio
 import logging
 import traceback
+import time
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -287,6 +288,13 @@ class FolderUploadProcess:
     async def _run(self):
         """Internal method that runs the upload process."""
         try:
+            phase_emit_state = {
+                "message": "",
+                "current": -1,
+                "total": -1,
+                "timestamp": 0.0,
+            }
+
             # Create progress callback that emits events (sync wrapper for async operations)
             def progress_callback(message_or_progress, completed: int = None, total: int = None):
                 """
@@ -318,21 +326,77 @@ class FolderUploadProcess:
                 else:
                     # Standard format: (message, completed, total)
                     message = message_or_progress
-                
+
+                message = str(message or "")
+                try:
+                    completed_value = int(completed) if completed is not None else 0
+                except Exception:
+                    completed_value = 0
+                try:
+                    total_value = int(total) if total is not None else 0
+                except Exception:
+                    total_value = 0
+
                 # Schedule async operations without blocking
                 async def update_progress():
                     async with self._stats_lock:
-                        if total is not None:
-                            self._stats["total_files"] = total
+                        if total is not None and total_value >= 0:
+                            self._stats["total_files"] = total_value
+                        self._stats["last_message"] = message
+                        self._stats["progress_current"] = completed_value
+                        self._stats["progress_total"] = total_value
                         # Update stats based on message
                         if completed is not None:
                             if "Uploaded:" in message or "Completed:" in message:
-                                self._stats["uploaded"] = completed
+                                self._stats["uploaded"] = completed_value
                             if "Failed:" in message:
-                                self._stats["failed"] = completed
-                    
+                                self._stats["failed"] = completed_value
+
+                    phase_name = (
+                        self._current_phase.value
+                        if self._current_phase
+                        else ProcessPhase.UPLOADING.value
+                    )
+
+                    now = time.monotonic()
+                    last_total = int(phase_emit_state.get("total", -1) or -1)
+                    last_current = int(phase_emit_state.get("current", -1) or -1)
+                    last_message = str(phase_emit_state.get("message", ""))
+                    last_ts = float(phase_emit_state.get("timestamp", 0.0) or 0.0)
+
+                    should_emit_phase = False
+                    if message != last_message or total_value != last_total:
+                        should_emit_phase = True
+                    elif total_value > 0:
+                        previous_percent = (
+                            (last_current / last_total) * 100
+                            if last_total > 0
+                            else -1.0
+                        )
+                        current_percent = (completed_value / total_value) * 100
+                        if (
+                            completed_value >= total_value
+                            or current_percent - previous_percent >= 1.0
+                            or now - last_ts >= 1.0
+                        ):
+                            should_emit_phase = True
+                    elif now - last_ts >= 1.5:
+                        should_emit_phase = True
+
+                    if should_emit_phase:
+                        phase_emit_state["message"] = message
+                        phase_emit_state["current"] = completed_value
+                        phase_emit_state["total"] = total_value
+                        phase_emit_state["timestamp"] = now
+                        await self.emit_phase_progress(
+                            phase_name,
+                            message,
+                            completed_value,
+                            total_value,
+                        )
+
                     await self._events.emit("progress", self.stats)
-                
+
                 # Schedule the async update
                 try:
                     loop = asyncio.get_running_loop()

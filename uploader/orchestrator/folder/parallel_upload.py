@@ -66,9 +66,16 @@ class ParallelUploadCoordinator:
         
         # Clear preview tasks from previous runs
         self._preview_tasks.clear()
-        
+
         if progress_callback:
             progress_callback(f"Uploading {len(pending_files)} files...", 0, total)
+        if process:
+            await process.emit_phase_progress(
+                "uploading",
+                f"Queued {len(pending_files)} file(s) for upload",
+                0,
+                len(pending_files),
+            )
         
         results = []
         
@@ -105,6 +112,13 @@ class ParallelUploadCoordinator:
             
             if process:
                 await self._update_process_stats(process, results)
+                await process.emit_phase_progress(
+                    "uploading",
+                    f"{'Uploaded' if result.success else 'Failed'}: {result.filename}",
+                    completed,
+                    len(pending_files),
+                    result.filename,
+                )
         
         uploaded = sum(1 for r in results if r.success)
         failed = sum(1 for r in results if not r.success)
